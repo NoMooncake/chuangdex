@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "kimi": {
+      "apiKey": "sk-在这里填入你的Kimi-API-Key",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "model": "moonshot-v1-8k"
+    }
+  }
+}

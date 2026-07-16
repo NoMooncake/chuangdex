@@ -1,0 +1,61 @@
+// 主进程与渲染进程共享的 Agent 通信契约。
+// 渲染进程只能通过 preload 暴露的 window.chuangdex.agent 间接使用这些类型。
+
+export type RunStatus = 'success' | 'running' | 'failed'
+
+/** 一条运行记录（右侧面板展示的数据单元） */
+export interface AgentRunEvent {
+  id: string
+  sessionId: string
+  title: string
+  detail: string
+  status: RunStatus
+  time: string
+}
+
+/** Agent 服务处理完成后的最终回复 */
+export interface AgentReply {
+  sessionId: string
+  content: string
+}
+
+/** 自动命名结果：title 为 null 表示未生成（调用失败或未配置），界面保持原标题 */
+export interface AgentTitleReply {
+  sessionId: string
+  title: string | null
+}
+
+/** 一条历史消息（多轮上下文用）：只含角色和内容，不含时间戳等界面数据 */
+export interface HistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+/** 渲染进程发给 Agent 服务的消息 */
+export interface AgentSendPayload {
+  sessionId: string
+  text: string
+  /** 当前会话的最近历史消息（按时间正序）；Agent 服务会再做过滤和截断 */
+  history?: HistoryMessage[]
+}
+
+/** IPC 通道名，集中在这一处定义，避免两端写错 */
+export const AGENT_CHANNELS = {
+  sendMessage: 'agent:send-message',
+  generateTitle: 'agent:generate-title',
+  runEvent: 'agent:run-event'
+} as const
+
+/** 会话持久化载荷：主进程把 sessions 当作不透明 JSON 存取，不解析内容 */
+export interface SessionsSavePayload {
+  activeId: string
+  sessions: unknown[]
+}
+
+/** 启动时恢复的结果；null 表示没有可用存档（文件缺失或损坏） */
+export type SessionsLoadResult = SessionsSavePayload | null
+
+export const SESSION_CHANNELS = {
+  load: 'sessions:load',
+  save: 'sessions:save'
+} as const
