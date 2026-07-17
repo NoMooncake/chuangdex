@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Message, mockSessions, RunRecord, Session } from './mock'
+import type { SkillInfo, TaskCreateInput, TaskInfo, TaskRepeatMode, TaskUpdateInput } from '../../shared/agent'
 
 function nowTime(): string {
   const d = new Date()
@@ -137,16 +138,40 @@ function runDuration(turn: TurnGroup): string | null {
 function SessionList(props: {
   sessions: Session[]
   activeId: string
+  view: 'chat' | 'scheduled' | 'skills'
   onSelect: (id: string) => void
-  onCreate: () => void
+  onNewChat: () => void
+  onViewScheduled: () => void
+  onViewSkills: () => void
   onDelete: (id: string) => void
 }): JSX.Element {
   return (
     <aside className="panel sidebar">
       <div className="panel-header">
         <span className="logo">◆ ChuangDex</span>
-        <button className="icon-btn" title="新建会话" onClick={props.onCreate}>＋</button>
       </div>
+
+      <nav className="sidebar-nav">
+        <button className="nav-item" onClick={props.onNewChat}>
+          <span className="nav-icon">＋</span>
+          <span>新建对话</span>
+        </button>
+        <button
+          className={'nav-item' + (props.view === 'scheduled' ? ' active' : '')}
+          onClick={props.onViewScheduled}
+        >
+          <span className="nav-icon">⏰</span>
+          <span>已安排</span>
+        </button>
+        <button
+          className={'nav-item' + (props.view === 'skills' ? ' active' : '')}
+          onClick={props.onViewSkills}
+        >
+          <span className="nav-icon">☰</span>
+          <span>Skills</span>
+        </button>
+      </nav>
+
       <div className="session-list">
         {props.sessions.map((session) => {
           const running = isSessionRunning(session)
@@ -155,7 +180,7 @@ function SessionList(props: {
               key={session.id}
               role="button"
               tabIndex={0}
-              className={'session-item' + (session.id === props.activeId ? ' active' : '')}
+              className={'session-item' + (session.id === props.activeId && props.view === 'chat' ? ' active' : '')}
               onClick={() => props.onSelect(session.id)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
@@ -492,12 +517,306 @@ function SidePanel(props: {
   )
 }
 
+function taskRepeatLabel(repeat: TaskRepeatMode): string {
+  return repeat === 'daily' ? '每天' : '每个工作日'
+}
+
+function taskDestinations(tasks: TaskInfo[]): string[] {
+  return [...new Set(tasks.map((task) => task.chatId))]
+}
+
+function TaskEditor(props: {
+  task?: TaskInfo
+  destinations: string[]
+  onCreate: (input: TaskCreateInput) => Promise<void>
+  onUpdate: (input: TaskUpdateInput) => Promise<void>
+  onCancel: () => void
+}): JSX.Element {
+  const [text, setText] = useState(props.task?.text ?? '')
+  const [time, setTime] = useState(props.task?.time ?? '09:00')
+  const [repeat, setRepeat] = useState<TaskRepeatMode>(props.task?.repeat ?? 'daily')
+  const [chatId, setChatId] = useState(props.task?.chatId ?? props.destinations[0] ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const isEditing = Boolean(props.task)
+
+  const submit = async (): Promise<void> => {
+    const trimmedText = text.trim()
+    if (!trimmedText) {
+      setError('请填写任务内容。')
+      return
+    }
+    if (!time) {
+      setError('请选择执行时间。')
+      return
+    }
+    if (!chatId) {
+      setError('请先选择一个已有的飞书会话。')
+      return
+    }
+
+    setError(null)
+    setSaving(true)
+    try {
+      if (props.task) {
+        await props.onUpdate({ id: props.task.id, text: trimmedText, time, repeat })
+      } else {
+        await props.onCreate({ chatId, text: trimmedText, time, repeat })
+      }
+      props.onCancel()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form
+      className="task-editor"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submit()
+      }}
+    >
+      <div className="task-editor-title">{isEditing ? '编辑已安排任务' : '新增已安排任务'}</div>
+      <label className="task-field task-field-wide">
+        <span>任务内容</span>
+        <textarea
+          value={text}
+          maxLength={500}
+          rows={3}
+          placeholder="例如：提醒我整理今天的工作"
+          onChange={(event) => setText(event.target.value)}
+        />
+      </label>
+      <div className="task-editor-fields">
+        <label className="task-field">
+          <span>时间</span>
+          <input type="time" value={time} onChange={(event) => setTime(event.target.value)} />
+        </label>
+        <label className="task-field">
+          <span>重复</span>
+          <select value={repeat} onChange={(event) => setRepeat(event.target.value as TaskRepeatMode)}>
+            <option value="daily">每天</option>
+            <option value="weekdays">每个工作日</option>
+          </select>
+        </label>
+      </div>
+
+      {isEditing ? (
+        <div className="task-target-note">将继续发送到原来的飞书会话。</div>
+      ) : (
+        <label className="task-field">
+          <span>发送到</span>
+          {props.destinations.length === 1 ? (
+            <div className="task-target-note">已有飞书会话</div>
+          ) : (
+            <select value={chatId} onChange={(event) => setChatId(event.target.value)}>
+              {props.destinations.map((destination, index) => (
+                <option key={destination} value={destination}>已有飞书会话 {index + 1}</option>
+              ))}
+            </select>
+          )}
+        </label>
+      )}
+
+      {error && <div className="task-form-error">{error}</div>}
+      <div className="task-editor-actions">
+        <button className="btn" type="button" disabled={saving} onClick={props.onCancel}>取消</button>
+        <button className="btn primary" type="submit" disabled={saving}>
+          {saving ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
+function ScheduledView(props: {
+  tasks: TaskInfo[]
+  onCreate: (input: TaskCreateInput) => Promise<void>
+  onUpdate: (input: TaskUpdateInput) => Promise<void>
+  onRemove: (id: string) => Promise<void>
+}): JSX.Element {
+  const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit'; task: TaskInfo } | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<string | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const destinations = useMemo(() => taskDestinations(props.tasks), [props.tasks])
+  const canCreate = destinations.length > 0
+
+  const removeTask = async (id: string): Promise<void> => {
+    setActionError(null)
+    setRemovingId(id)
+    try {
+      await props.onRemove(id)
+      setPendingRemove(null)
+      setEditor(null)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRemovingId(null)
+    }
+  }
+
+  return (
+    <main className="panel chat data-view">
+      <div className="panel-header chat-header">
+        <span className="chat-title">已安排</span>
+        <button
+          className="btn small primary"
+          title={canCreate ? '新增定时任务' : '请先在飞书创建一个任务以确定发送会话'}
+          disabled={!canCreate}
+          onClick={() => {
+            setActionError(null)
+            setPendingRemove(null)
+            setEditor({ mode: 'create' })
+          }}
+        >
+          新增任务
+        </button>
+      </div>
+      <div className="data-list">
+        {editor && (
+          <TaskEditor
+            key={editor.mode === 'edit' ? editor.task.id : 'new-task'}
+            task={editor.mode === 'edit' ? editor.task : undefined}
+            destinations={destinations}
+            onCreate={props.onCreate}
+            onUpdate={props.onUpdate}
+            onCancel={() => setEditor(null)}
+          />
+        )}
+
+        {!canCreate && (
+          <div className="task-source-note">
+            现有定时任务会回复到创建它的飞书会话。请先从飞书创建一次任务，桌面端就可以继续新增和管理同一会话的任务。
+          </div>
+        )}
+
+        {actionError && <div className="task-form-error">{actionError}</div>}
+
+        {props.tasks.length === 0 ? (
+          <div className="empty-state">暂无已安排任务</div>
+        ) : (
+          props.tasks.map((task) => (
+            <div key={task.id} className="data-item">
+              <div className="data-item-head">
+                <div>
+                  <div className="data-title">{task.text}</div>
+                  <div className="data-meta">
+                    {taskRepeatLabel(task.repeat)} · {task.time} · 下次 {task.nextRunAt}
+                  </div>
+                </div>
+                <div className="data-actions">
+                  <button
+                    className="data-action"
+                    disabled={removingId === task.id}
+                    onClick={() => {
+                      setActionError(null)
+                      setPendingRemove(null)
+                      setEditor({ mode: 'edit', task })
+                    }}
+                  >
+                    编辑
+                  </button>
+                  <button
+                    className="data-action danger"
+                    disabled={removingId === task.id}
+                    onClick={() => {
+                      setActionError(null)
+                      setEditor(null)
+                      setPendingRemove(task.id)
+                    }}
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+
+              {pendingRemove === task.id && (
+                <div className="task-delete-confirm">
+                  <span>确定删除这个任务吗？删除后不会再执行。</span>
+                  <div className="data-actions">
+                    <button className="data-action" disabled={removingId === task.id} onClick={() => setPendingRemove(null)}>取消</button>
+                    <button
+                      className="data-action danger"
+                      disabled={removingId === task.id}
+                      onClick={() => void removeTask(task.id)}
+                    >
+                      {removingId === task.id ? '删除中…' : '确认删除'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </main>
+  )
+}
+
+function SkillsView({ skills }: { skills: SkillInfo[] }): JSX.Element {
+  return (
+    <main className="panel chat data-view">
+      <div className="panel-header chat-header">
+        <span className="chat-title">Skills</span>
+      </div>
+      <div className="data-list">
+        {skills.length === 0 ? (
+          <div className="empty-state">暂无可用 Skills</div>
+        ) : (
+          skills.map((skill) => (
+            <div key={skill.name} className="data-item">
+              <div className="data-title">{skill.name}</div>
+              <div className="data-description">{skill.description}</div>
+              <div className="data-meta">触发词：{skill.triggers.join('、')}</div>
+            </div>
+          ))
+        )}
+      </div>
+    </main>
+  )
+}
+
+function EmptyRunPanel(props: { collapsed: boolean; onToggle: () => void }): JSX.Element {
+  if (props.collapsed) {
+    return (
+      <aside className="panel side-collapsed">
+        <button className="icon-btn" title="展开执行面板" onClick={props.onToggle}>«</button>
+      </aside>
+    )
+  }
+  return (
+    <aside className="panel runs">
+      <div className="panel-header">
+        <span>本次执行</span>
+        <button className="icon-btn" title="收起执行面板" onClick={props.onToggle}>»</button>
+      </div>
+      <div className="ctx-body">
+        <div className="ctx-section">
+          <div className="ctx-empty">当前没有正在执行的对话。</div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<Session[]>(mockSessions)
   const [activeId, setActiveId] = useState<string>(mockSessions[0].id)
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [sideCollapsed, setSideCollapsed] = useState(false)
+  const [view, setView] = useState<'chat' | 'scheduled' | 'skills'>('chat')
+  const [tasks, setTasks] = useState<TaskInfo[]>([])
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+
+  const refreshTasks = async (): Promise<void> => {
+    const nextTasks = await window.chuangdex.tasks.load()
+    setTasks(nextTasks)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -528,6 +847,21 @@ export default function App(): JSX.Element {
       .catch((error) => console.error('会话保存失败:', error))
   }, [sessions, activeId, loaded])
 
+  // 查看“已安排”时，从主进程读取真实定时任务数据
+  useEffect(() => {
+    if (view !== 'scheduled') return
+    refreshTasks().catch((error) => console.error('加载定时任务失败：', error))
+  }, [view])
+
+  // 查看“Skills”时，从主进程读取真实 Skills 数据
+  useEffect(() => {
+    if (view !== 'skills') return
+    window.chuangdex.skills
+      .load()
+      .then(setSkills)
+      .catch((error) => console.error('加载 Skills 失败：', error))
+  }, [view])
+
   const active = useMemo(
     () => sessions.find((session) => session.id === activeId) ?? sessions[0],
     [sessions, activeId]
@@ -554,10 +888,34 @@ export default function App(): JSX.Element {
     return unsubscribe
   }, [])
 
-  const handleCreate = (): void => {
+  const handleNewChat = (): void => {
     const fresh = makeEmptySession(sessions)
     setSessions((previous) => [fresh, ...previous])
     setActiveId(fresh.id)
+    setView('chat')
+  }
+
+  const handleSelectSession = (id: string): void => {
+    setActiveId(id)
+    setView('chat')
+  }
+
+  const handleViewScheduled = (): void => setView('scheduled')
+  const handleViewSkills = (): void => setView('skills')
+
+  const handleCreateTask = async (input: TaskCreateInput): Promise<void> => {
+    await window.chuangdex.tasks.create(input)
+    await refreshTasks()
+  }
+
+  const handleUpdateTask = async (input: TaskUpdateInput): Promise<void> => {
+    await window.chuangdex.tasks.update(input)
+    await refreshTasks()
+  }
+
+  const handleRemoveTask = async (id: string): Promise<void> => {
+    await window.chuangdex.tasks.remove(id)
+    await refreshTasks()
   }
 
   const handleRequestDelete = (id: string): void => {
@@ -669,17 +1027,50 @@ export default function App(): JSX.Element {
       <SessionList
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActiveId}
-        onCreate={handleCreate}
+        view={view}
+        onSelect={handleSelectSession}
+        onNewChat={handleNewChat}
+        onViewScheduled={handleViewScheduled}
+        onViewSkills={handleViewSkills}
         onDelete={handleRequestDelete}
       />
-      <ChatPanel session={active} turns={activeTurns} onSend={handleSend} onRename={handleRename} />
-      <SidePanel
-        session={active}
-        turns={activeTurns}
-        collapsed={sideCollapsed}
-        onToggle={() => setSideCollapsed((value) => !value)}
-      />
+
+      {view === 'chat' && (
+        <>
+          <ChatPanel session={active} turns={activeTurns} onSend={handleSend} onRename={handleRename} />
+          <SidePanel
+            session={active}
+            turns={activeTurns}
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((value) => !value)}
+          />
+        </>
+      )}
+
+      {view === 'scheduled' && (
+        <>
+          <ScheduledView
+            tasks={tasks}
+            onCreate={handleCreateTask}
+            onUpdate={handleUpdateTask}
+            onRemove={handleRemoveTask}
+          />
+          <EmptyRunPanel
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((value) => !value)}
+          />
+        </>
+      )}
+
+      {view === 'skills' && (
+        <>
+          <SkillsView skills={skills} />
+          <EmptyRunPanel
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((value) => !value)}
+          />
+        </>
+      )}
 
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>

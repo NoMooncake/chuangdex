@@ -53,6 +53,52 @@ export const AGENT_CHANNELS = {
   runEvent: 'agent:run-event'
 } as const
 
+/** Skill 的桌面展示信息（不含工作说明正文） */
+export interface SkillInfo {
+  name: string
+  description: string
+  triggers: string[]
+}
+
+export type TaskRepeatMode = 'daily' | 'weekdays'
+
+/** 定时任务的桌面展示信息。chatId 仅用于在界面内选择已有投递会话，不直接展示。 */
+export interface TaskInfo {
+  id: string
+  text: string
+  repeat: TaskRepeatMode
+  time: string
+  nextRunAt: string
+  chatId: string
+}
+
+/** 从桌面端新建定时任务时提交的最小信息。 */
+export interface TaskCreateInput {
+  chatId: string
+  text: string
+  time: string
+  repeat: TaskRepeatMode
+}
+
+/** 桌面端可编辑的任务字段；投递会话保持不变。 */
+export interface TaskUpdateInput {
+  id: string
+  text: string
+  time: string
+  repeat: TaskRepeatMode
+}
+
+export const SKILL_CHANNELS = {
+  load: 'skills:load'
+} as const
+
+export const TASK_CHANNELS = {
+  load: 'tasks:load',
+  create: 'tasks:create',
+  update: 'tasks:update',
+  remove: 'tasks:remove'
+} as const
+
 /** 会话持久化载荷：主进程把 sessions 当作不透明 JSON 存取，不解析内容 */
 export interface SessionsSavePayload {
   activeId: string

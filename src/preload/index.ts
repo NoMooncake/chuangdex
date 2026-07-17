@@ -7,7 +7,13 @@ import {
   AgentTitleReply,
   SESSION_CHANNELS,
   SessionsLoadResult,
-  SessionsSavePayload
+  SessionsSavePayload,
+  SKILL_CHANNELS,
+  SkillInfo,
+  TASK_CHANNELS,
+  TaskCreateInput,
+  TaskInfo,
+  TaskUpdateInput
 } from '../shared/agent'
 
 // 渲染进程唯一可见的安全桥。
@@ -43,6 +49,19 @@ const api = {
     /** 会话数据有任何变化后调用，主进程防抖落盘 */
     save: (payload: SessionsSavePayload): Promise<void> =>
       ipcRenderer.invoke(SESSION_CHANNELS.save, payload)
+  },
+
+  /** 只读暴露 Skills 列表（不含工作说明正文和任何密钥） */
+  skills: {
+    load: (): Promise<SkillInfo[]> => ipcRenderer.invoke(SKILL_CHANNELS.load)
+  },
+
+  /** 已安排任务：界面只能操作任务本身，不能读取飞书配置或密钥。 */
+  tasks: {
+    load: (): Promise<TaskInfo[]> => ipcRenderer.invoke(TASK_CHANNELS.load),
+    create: (input: TaskCreateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.create, input),
+    update: (input: TaskUpdateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.update, input),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke(TASK_CHANNELS.remove, id)
   }
 }
 
