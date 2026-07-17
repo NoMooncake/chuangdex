@@ -15,7 +15,7 @@ export function startFeishuBot(
   config: FeishuConfig,
   agent: ChuangdexAgentService,
   tasksFile: string
-): void {
+): TaskScheduler {
   // REST 客户端：用于以机器人身份发送回复
   const client = new Lark.Client({
     appId: config.appId,
@@ -67,4 +67,5 @@ export function startFeishuBot(
 
   scheduler.start()
   wsClient.start({ eventDispatcher: dispatcher })
+  return scheduler
 }

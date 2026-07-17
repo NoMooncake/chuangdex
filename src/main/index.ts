@@ -3,7 +3,18 @@ import { join } from 'path'
 import { ChuangdexAgentService } from '../agent/service'
 import { KimiProvider } from '../agent/providers/kimi'
 import { loadSkills } from '../agent/skills/loader'
-import { AGENT_CHANNELS, AgentSendPayload, SESSION_CHANNELS, SessionsSavePayload } from '../shared/agent'
+import { TaskScheduler, TaskStore, type ScheduledTask, formatTime } from '../channels/scheduler'
+import {
+  AGENT_CHANNELS,
+  AgentSendPayload,
+  SKILL_CHANNELS,
+  TASK_CHANNELS,
+  SESSION_CHANNELS,
+  SessionsSavePayload,
+  TaskCreateInput,
+  TaskInfo,
+  TaskUpdateInput
+} from '../shared/agent'
 import { loadKimiConfig, modelsConfigPath } from './model-config'
 import { feishuConfigPath, loadFeishuConfig } from './feishu-config'
 import { startFeishuBot } from '../channels/feishu'
@@ -17,6 +28,10 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 // ChuangDex Agent 内核：本地模块常驻主进程，启动时装配模型 provider
 let agentService: ChuangdexAgentService
+
+// 飞书渠道启动后持有的唯一调度器。桌面端的管理操作必须经过它，
+// 才能立即同步到内存中的巡检任务，而不是只改写 JSON 文件。
+let taskScheduler: TaskScheduler | null = null
 
 function setupAgent(): void {
   const kimiConfig = loadKimiConfig(app.getAppPath())
@@ -71,6 +86,74 @@ function registerAgentIpc(): void {
   })
 }
 
+function scheduledTasksPath(): string {
+  return join(app.getPath('userData'), 'scheduled-tasks.json')
+}
+
+function toTaskInfo(task: ScheduledTask): TaskInfo {
+  return {
+    id: task.id,
+    text: task.text,
+    repeat: task.repeat,
+    time: task.time,
+    nextRunAt: formatTime(task.nextRunAt),
+    chatId: task.chatId
+  }
+}
+
+function currentTaskScheduler(): TaskScheduler {
+  if (!taskScheduler) {
+    throw new Error('飞书机器人尚未启动，无法修改已安排任务')
+  }
+  return taskScheduler
+}
+
+/** 桌面端数据桥：只暴露必要的 Skills / 定时任务数据，不暴露任何密钥 */
+function setupDataBridge(): void {
+  ipcMain.handle(SKILL_CHANNELS.load, () => {
+    try {
+      const skills = loadSkills(join(app.getAppPath(), 'skills'))
+      return skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        triggers: skill.triggers
+      }))
+    } catch (err) {
+      console.warn('[chuangdex] 加载 Skills 失败：', err)
+      return []
+    }
+  })
+
+  ipcMain.handle(TASK_CHANNELS.load, () => {
+    try {
+      const tasks = taskScheduler
+        ? taskScheduler.listTasks()
+        : new TaskStore(scheduledTasksPath()).load()
+      return tasks.map(toTaskInfo)
+    } catch (err) {
+      console.warn('[chuangdex] 加载定时任务失败：', err)
+      return []
+    }
+  })
+
+  ipcMain.handle(TASK_CHANNELS.create, (_event, input: TaskCreateInput) => {
+    const scheduler = currentTaskScheduler()
+    const knownChatIds = new Set(scheduler.listTasks().map((task) => task.chatId))
+    if (!knownChatIds.has(input?.chatId)) {
+      throw new Error('请从已有任务的飞书会话中选择投递位置')
+    }
+    return toTaskInfo(scheduler.addTask(input))
+  })
+
+  ipcMain.handle(TASK_CHANNELS.update, (_event, input: TaskUpdateInput) => {
+    return toTaskInfo(currentTaskScheduler().updateTask(input.id, input))
+  })
+
+  ipcMain.handle(TASK_CHANNELS.remove, (_event, id: string) => {
+    currentTaskScheduler().removeTask(id)
+  })
+}
+
 // 飞书机器人渠道：配置存在才启动；任何失败只记日志，不影响桌面端
 function setupFeishu(): void {
   const config = loadFeishuConfig(app.getAppPath())
@@ -82,7 +165,7 @@ function setupFeishu(): void {
     return
   }
   try {
-    startFeishuBot(config, agentService, join(app.getPath('userData'), 'scheduled-tasks.json'))
+    taskScheduler = startFeishuBot(config, agentService, scheduledTasksPath())
     console.log('[chuangdex] 飞书机器人已启动（长连接模式），等待消息…')
   } catch (err) {
     console.error('[chuangdex] 飞书机器人启动失败（不影响桌面端）：', err)
@@ -133,6 +216,7 @@ if (!hasSingleInstanceLock) {
   })
 
   app.whenReady().then(() => {
+    setupDataBridge()
     setupAgent()
     registerAgentIpc()
     setupFeishu()

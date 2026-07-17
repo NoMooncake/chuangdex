@@ -62,6 +62,10 @@ function isValidTime(value: unknown): value is string {
   return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
 }
 
+function isRepeatMode(value: unknown): value is RepeatMode {
+  return value === 'daily' || value === 'weekdays'
+}
+
 /**
  * 任务文件属于本机持久化边界，不能把未校验的 JSON 当成 ScheduledTask 使用。
  * 单条坏记录会被忽略，避免它阻塞其它正常任务或制造无效的执行时间。
@@ -77,7 +81,7 @@ function isScheduledTask(value: unknown): value is ScheduledTask {
     typeof task.text === 'string' &&
     task.text.trim().length > 0 &&
     isValidTime(task.time) &&
-    (task.repeat === 'daily' || task.repeat === 'weekdays') &&
+    isRepeatMode(task.repeat) &&
     typeof task.nextRunAt === 'number' &&
     Number.isFinite(task.nextRunAt) &&
     (task.lastRunAt === undefined || (typeof task.lastRunAt === 'number' && Number.isFinite(task.lastRunAt))) &&
@@ -163,16 +167,21 @@ export class TaskScheduler {
     this.timer = null
   }
 
+  /** 返回任务快照，供桌面端展示；调用方不能改写调度器的内存状态。 */
+  listTasks(): ScheduledTask[] {
+    return this.tasks.map((task) => ({ ...task }))
+  }
+
   /** 创建任务：立即计算下一次执行时间并落盘 */
   addTask(input: { chatId: string; text: string; time: string; repeat: RepeatMode }): ScheduledTask {
-    if (!input.chatId || !input.text.trim() || !isValidTime(input.time)) {
+    if (!input.chatId || !input.text.trim() || !isValidTime(input.time) || !isRepeatMode(input.repeat)) {
       throw new Error('定时任务参数不完整或时间格式无效')
     }
     taskSeq += 1
     const task: ScheduledTask = {
       id: `task-${Date.now()}-${taskSeq}`,
       chatId: input.chatId,
-      text: input.text,
+      text: input.text.trim(),
       time: input.time,
       repeat: input.repeat,
       nextRunAt: computeNextRun(input.time, input.repeat),
@@ -188,6 +197,53 @@ export class TaskScheduler {
         `会话 ${task.chatId} · 下次执行 ${formatTime(task.nextRunAt)} · 内容「${task.text.slice(0, 30)}」`
     )
     return task
+  }
+
+  /**
+   * 更新任务内容、执行时间和重复方式。更新后的下一次执行时间从现在重新计算，
+   * 这样桌面端的编辑会立即作用到正在运行的调度器。
+   */
+  updateTask(id: string, input: { text: string; time: string; repeat: RepeatMode }): ScheduledTask {
+    if (!id || !input.text.trim() || !isValidTime(input.time) || !isRepeatMode(input.repeat)) {
+      throw new Error('定时任务参数不完整或时间格式无效')
+    }
+    const index = this.tasks.findIndex((task) => task.id === id)
+    if (index === -1) throw new Error('未找到要编辑的定时任务')
+
+    const previous = this.tasks[index]
+    const updated: ScheduledTask = {
+      ...previous,
+      text: input.text.trim(),
+      time: input.time,
+      repeat: input.repeat,
+      nextRunAt: computeNextRun(input.time, input.repeat)
+    }
+    this.tasks[index] = updated
+    if (!this.store.save(this.tasks)) {
+      this.tasks[index] = previous
+      throw new Error('定时任务保存失败，未更新任务')
+    }
+
+    this.log(
+      `[scheduler] 编辑任务 ${updated.id} · ${repeatLabel(updated.repeat)} ${updated.time} · ` +
+        `下次执行 ${formatTime(updated.nextRunAt)} · 内容「${updated.text.slice(0, 30)}」`
+    )
+    return updated
+  }
+
+  /** 删除任务并立即持久化，之后的巡检不会再执行它。 */
+  removeTask(id: string): ScheduledTask {
+    const index = this.tasks.findIndex((task) => task.id === id)
+    if (index === -1) throw new Error('未找到要删除的定时任务')
+
+    const [removed] = this.tasks.splice(index, 1)
+    if (!this.store.save(this.tasks)) {
+      this.tasks.splice(index, 0, removed)
+      throw new Error('定时任务保存失败，未删除任务')
+    }
+
+    this.log(`[scheduler] 删除任务 ${removed.id} · 内容「${removed.text.slice(0, 30)}」`)
+    return removed
   }
 
   /** 巡检：执行所有到期任务（串行，避免并发重复） */
