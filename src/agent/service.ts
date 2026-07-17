@@ -22,6 +22,8 @@ export interface AgentRequest {
   history?: HistoryMessage[]
   /** true 表示这是定时任务到点后的执行：text 是创建任务时交代的内容，不是新请求 */
   scheduled?: boolean
+  /** 界面生成的轮次标记，原样贴到本轮所有运行记录上 */
+  turnId?: string
 }
 
 /** 运行记录的发射口：Agent 服务每产生一条记录就调用一次 */
@@ -94,8 +96,11 @@ export class ChuangdexAgentService {
    * 处理一条用户消息。
    * 过程中会向 sink 依次发射运行记录，最终返回回复文本。
    */
-  async handleMessage(request: AgentRequest, emit: RunEventSink): Promise<AgentReply> {
+  async handleMessage(request: AgentRequest, emit0: RunEventSink): Promise<AgentReply> {
     const { sessionId, text } = request
+    // 包装发射口：给本轮全部运行记录贴上界面的轮次标记（仅用于分组，不改变内容）
+    const emit: RunEventSink = (e) =>
+      emit0(request.turnId ? { ...e, turnId: request.turnId } : e)
 
     // 1. 收到消息（定时任务执行时标记为“执行已触发的定时任务”）
     const scheduled = request.scheduled === true
@@ -329,7 +334,8 @@ export class ChuangdexAgentService {
       title,
       detail,
       status,
-      time: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      ts: Date.now()
     }
   }
 }

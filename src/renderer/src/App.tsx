@@ -1,61 +1,41 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Message, mockSessions, RunRecord, RunStatus, Session } from './mock'
-
-const statusLabel: Record<RunStatus, string> = {
-  success: '成功',
-  running: '运行中',
-  failed: '失败'
-}
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Message, mockSessions, RunRecord, Session } from './mock'
 
 function nowTime(): string {
   const d = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
-/** 按 id 追加或原地更新一条运行记录（running → success 的状态翻转靠它实现） */
 function upsertRun(runs: RunRecord[], run: RunRecord): RunRecord[] {
-  const idx = runs.findIndex((r) => r.id === run.id)
-  if (idx === -1) return [...runs, run]
+  const index = runs.findIndex((item) => item.id === run.id)
+  if (index === -1) return [...runs, run]
   const next = runs.slice()
-  next[idx] = run
+  next[index] = run
   return next
 }
 
 let sessionSeq = 0
+let turnSeq = 0
 
-/** 生成独立会话 ID（时间戳 + 序号，保证不与其他会话重复） */
 function newSessionId(): string {
   sessionSeq += 1
-  return `s-${Date.now()}-${sessionSeq}`
+  return 's-' + Date.now() + '-' + sessionSeq
 }
 
-/** 校验主进程返回的存档结构，防止损坏数据进入界面 */
-function isValidSessionData(data: unknown): data is Session[] {
-  return (
-    Array.isArray(data) &&
-    data.length > 0 &&
-    data.every(
-      (s) =>
-        s &&
-        typeof s.id === 'string' &&
-        typeof s.title === 'string' &&
-        Array.isArray(s.messages) &&
-        Array.isArray(s.runs)
-    )
-  )
+function newTurnId(): string {
+  turnSeq += 1
+  return 'turn-' + Date.now() + '-' + turnSeq
 }
 
-/** “新对话”“新对话 2”“新对话 3”… 跳过已占用的名称 */
 function nextSessionTitle(existing: Session[]): string {
-  const titles = new Set(existing.map((s) => s.title))
+  const titles = new Set(existing.map((session) => session.title))
   if (!titles.has('新对话')) return '新对话'
-  let n = 2
-  while (titles.has(`新对话 ${n}`)) n += 1
-  return `新对话 ${n}`
+  let number = 2
+  while (titles.has('新对话 ' + number)) number += 1
+  return '新对话 ' + number
 }
 
-/** 创建一个干净的空会话：独立 ID、空消息、空运行记录 */
 function makeEmptySession(existing: Session[]): Session {
   return {
     id: newSessionId(),
@@ -65,6 +45,93 @@ function makeEmptySession(existing: Session[]): Session {
     messages: [],
     runs: []
   }
+}
+
+function isValidSessionData(data: unknown): data is Session[] {
+  return (
+    Array.isArray(data) &&
+    data.length > 0 &&
+    data.every(
+      (session) =>
+        session &&
+        typeof session.id === 'string' &&
+        typeof session.title === 'string' &&
+        Array.isArray(session.messages) &&
+        Array.isArray(session.runs)
+    )
+  )
+}
+
+interface TurnGroup {
+  turnId: string
+  user?: Message
+  assistant?: Message
+  runs: RunRecord[]
+  running: boolean
+  failed: boolean
+}
+
+function groupTurns(session: Session): TurnGroup[] {
+  const byId = new Map<string, TurnGroup>()
+  const order: TurnGroup[] = []
+  const getTurn = (id: string): TurnGroup => {
+    let turn = byId.get(id)
+    if (!turn) {
+      turn = { turnId: id, runs: [], running: false, failed: false }
+      byId.set(id, turn)
+      order.push(turn)
+    }
+    return turn
+  }
+
+  let legacy: TurnGroup | null = null
+  for (const message of session.messages) {
+    if (message.turnId) {
+      const turn = getTurn(message.turnId)
+      if (message.role === 'user') turn.user = message
+      else turn.assistant = message
+      legacy = null
+    } else {
+      if (message.role === 'user' || !legacy) legacy = getTurn('legacy-' + message.id)
+      if (message.role === 'user') legacy.user = message
+      else legacy.assistant = message
+    }
+  }
+
+  for (const run of session.runs) {
+    if (run.turnId && byId.has(run.turnId)) byId.get(run.turnId)!.runs.push(run)
+  }
+
+  for (const turn of order) {
+    turn.running = Boolean(turn.user) && !turn.assistant
+    turn.failed = turn.runs.some((run) => run.status === 'failed')
+  }
+  return order
+}
+
+function isSessionRunning(session: Session): boolean {
+  return session.messages.length > 0 && session.messages[session.messages.length - 1].role === 'user'
+}
+
+function runState(turn: TurnGroup): 'success' | 'running' | 'failed' {
+  if (turn.running) return 'running'
+  if (turn.failed) return 'failed'
+  return 'success'
+}
+
+function runStateLabel(turn: TurnGroup): string {
+  const state = runState(turn)
+  if (state === 'running') return '运行中'
+  if (state === 'failed') return '有失败'
+  return '已完成'
+}
+
+function runDuration(turn: TurnGroup): string | null {
+  const timestamps = turn.runs.map((run) => run.ts).filter((time): time is number => typeof time === 'number')
+  if (timestamps.length < 2) return null
+  const elapsed = Math.max(...timestamps) - Math.min(...timestamps)
+  if (elapsed < 1000) return '不到 1 秒'
+  return (elapsed / 1000).toFixed(1) + ' 秒'
 }
 
 function SessionList(props: {
@@ -81,30 +148,41 @@ function SessionList(props: {
         <button className="icon-btn" title="新建会话" onClick={props.onCreate}>＋</button>
       </div>
       <div className="session-list">
-        {props.sessions.map((s) => (
-          <div
-            key={s.id}
-            role="button"
-            tabIndex={0}
-            className={`session-item ${s.id === props.activeId ? 'active' : ''}`}
-            onClick={() => props.onSelect(s.id)}
-            onKeyDown={(e) => e.key === 'Enter' && props.onSelect(s.id)}
-          >
-            <div className="session-title">{s.title}</div>
-            <div className="session-preview">{s.preview}</div>
-            <div className="session-time">{s.updatedAt}</div>
-            <button
-              className="session-delete"
-              title="删除会话"
-              onClick={(e) => {
-                e.stopPropagation()
-                props.onDelete(s.id)
+        {props.sessions.map((session) => {
+          const running = isSessionRunning(session)
+          return (
+            <div
+              key={session.id}
+              role="button"
+              tabIndex={0}
+              className={'session-item' + (session.id === props.activeId ? ' active' : '')}
+              onClick={() => props.onSelect(session.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  props.onSelect(session.id)
+                }
               }}
             >
-              ×
-            </button>
-          </div>
-        ))}
+              <div className="session-title-row">
+                <span className={'s-dot' + (running ? ' running' : '')} aria-hidden="true" />
+                <span className="session-title">{session.title}</span>
+              </div>
+              <div className="session-preview">{running ? '处理中…' : session.preview}</div>
+              <div className="session-time">{session.updatedAt}</div>
+              <button
+                className="session-delete"
+                title="删除会话"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  props.onDelete(session.id)
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )
+        })}
       </div>
       <div className="sidebar-footer">
         <span className="avatar">C</span>
@@ -115,31 +193,107 @@ function SessionList(props: {
   )
 }
 
-function MessageBubble({ message }: { message: Message }): JSX.Element {
+function RunSteps({ runs, compact = false }: { runs: RunRecord[]; compact?: boolean }): JSX.Element {
   return (
-    <div className={`message ${message.role}`}>
-      <div className="message-avatar">{message.role === 'user' ? '你' : 'AI'}</div>
-      <div className="message-body">
-        <div className="message-content">{message.content}</div>
-        <div className="message-time">{message.time}</div>
-      </div>
+    <ol className={'exec-steps' + (compact ? ' ctx-steps' : '')}>
+      {runs.map((run) => (
+        <li key={run.id} className="exec-step">
+          <span className={'status-dot ' + run.status} aria-hidden="true" />
+          <div className="step-main">
+            <div className="step-title">{run.title}</div>
+            <div className="step-detail">{run.detail}</div>
+          </div>
+          <span className="step-time">{run.time}</span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function summarizeTurn(turn: TurnGroup): {
+  text: string
+  context: string | null
+  skill: string | null
+  error: string | null
+  running: boolean
+} {
+  const timestamps = turn.runs
+    .map((run) => run.ts)
+    .filter((time): time is number => typeof time === 'number')
+  const duration = timestamps.length >= 2 ? Math.max(...timestamps) - Math.min(...timestamps) : null
+  const running = turn.running
+
+  let text: string
+  if (running) text = '正在工作…'
+  else if (duration !== null) text = duration < 1000 ? '已工作 不到 1 秒' : `已工作 ${(duration / 1000).toFixed(1)} 秒`
+  else text = '已响应'
+
+  const contextRun = turn.runs.find((run) => run.title.includes('条上下文消息'))
+  const context = contextRun ? contextRun.title.replace(/^已带入 /, '').replace(/ 条上下文消息$/, '') + ' 条' : null
+
+  const skillRun = turn.runs.find((run) => run.title.startsWith('选择 '))
+  const noSkillRun = turn.runs.find((run) => run.title === '未匹配 Skill')
+  const skill = skillRun ? skillRun.title.slice(3) : (noSkillRun ? '未使用' : null)
+
+  const failedRun = turn.runs.find((run) => run.status === 'failed')
+  const error = failedRun
+    ? failedRun.detail
+      ? `${failedRun.title}：${failedRun.detail}`
+      : failedRun.title
+    : null
+
+  return { text, context, skill, error, running }
+}
+
+function TurnSummary({ turn }: { turn: TurnGroup }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const summary = useMemo(() => summarizeTurn(turn), [turn])
+
+  return (
+    <div className="turn-summary">
+      <button className="turn-summary-btn" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className={'chev' + (open ? ' open' : '')} aria-hidden="true">▶</span>
+        <span>{summary.text}</span>
+      </button>
+      {open && (
+        <div className="turn-summary-detail">
+          {summary.context !== null && (
+            <span className="summary-chip">上下文：{summary.context}</span>
+          )}
+          {summary.skill !== null && (
+            <span className="summary-chip">Skill：{summary.skill}</span>
+          )}
+          {summary.error && (
+            <span className="summary-chip error">{summary.error}</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
+function ReplyDivider(): JSX.Element {
+  return <div className="reply-divider" />
+}
+
 function ChatPanel(props: {
   session: Session
+  turns: TurnGroup[]
   onSend: (text: string) => void
   onRename: (id: string, title: string) => void
 }): JSX.Element {
   const [draft, setDraft] = useState('')
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
+  const listRef = useRef<HTMLDivElement>(null)
 
-  // 切换会话时退出重命名状态
   useEffect(() => {
     setEditingTitle(false)
   }, [props.session.id])
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
+  }, [props.session.id, props.session.messages.length, props.session.runs.length])
 
   const submit = (): void => {
     const text = draft.trim()
@@ -168,10 +322,10 @@ function ChatPanel(props: {
               value={titleDraft}
               autoFocus
               maxLength={30}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') saveRename()
-                if (e.key === 'Escape') setEditingTitle(false)
+              onChange={(event) => setTitleDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') saveRename()
+                if (event.key === 'Escape') setEditingTitle(false)
               }}
             />
             <button className="btn small" onClick={saveRename}>保存</button>
@@ -180,62 +334,148 @@ function ChatPanel(props: {
         ) : (
           <>
             <span className="chat-title">{props.session.title}</span>
-            <button className="icon-btn title-edit-btn" title="重命名会话" onClick={startRename}>
-              ✎
-            </button>
+            <button className="icon-btn title-edit-btn" title="重命名会话" onClick={startRename}>✎</button>
           </>
         )}
         {props.session.demo && <span className="badge">演示数据</span>}
       </div>
-      <div className="message-list">
-        {props.session.messages.length === 0 && (
+
+      <div className="message-list" ref={listRef}>
+        {props.turns.length === 0 && (
           <div className="empty-state">全新会话，从下方输入第一条消息开始。</div>
         )}
-        {props.session.messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+
+        {props.turns.map((turn) => (
+          <section key={turn.turnId} className="turn">
+            {turn.user && (
+              <div className="message-row user">
+                <div className="message-body">
+                  <div className="message-content">{turn.user.content}</div>
+                  <div className="message-time">{turn.user.time}</div>
+                </div>
+              </div>
+            )}
+
+            {(turn.runs.length > 0 || turn.running) && (
+              <>
+                <TurnSummary turn={turn} />
+                <ReplyDivider />
+              </>
+            )}
+
+            {turn.assistant && (
+              <div className="message-row assistant">
+                <div className="message-body">
+                  <div className="message-content">{turn.assistant.content}</div>
+                  <div className="message-time">{turn.assistant.time}</div>
+                </div>
+              </div>
+            )}
+          </section>
         ))}
       </div>
-      <div className="composer">
+
+      <form
+        className="composer"
+        onSubmit={(event) => {
+          event.preventDefault()
+          submit()
+        }}
+      >
         <textarea
           value={draft}
           placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
               submit()
             }
           }}
           rows={1}
         />
-        <button className="send-btn" onClick={submit}>发送</button>
-      </div>
+        <button className="send-btn" type="submit">发送</button>
+      </form>
     </main>
   )
 }
 
-function RunPanel({ runs }: { runs: RunRecord[] }): JSX.Element {
+function CtxSection(props: {
+  title: string
+  count?: number
+  defaultOpen?: boolean
+  children: ReactNode
+}): JSX.Element {
+  const [open, setOpen] = useState(props.defaultOpen !== false)
+  return (
+    <section className="ctx-section">
+      <button className="ctx-title" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span className={'chev' + (open ? ' open' : '')} aria-hidden="true">▶</span>
+        <span>{props.title}</span>
+        {props.count !== undefined && <span className="ctx-count">{props.count}</span>}
+      </button>
+      {open && props.children}
+    </section>
+  )
+}
+
+function SidePanel(props: {
+  session: Session
+  turns: TurnGroup[]
+  collapsed: boolean
+  onToggle: () => void
+}): JSX.Element {
+  if (props.collapsed) {
+    return (
+      <aside className="panel side-collapsed">
+        <button className="icon-btn" title="展开执行面板" onClick={props.onToggle}>«</button>
+      </aside>
+    )
+  }
+
+  const latest = [...props.turns].reverse().find((turn) => turn.user || turn.runs.length > 0)
+  const background = props.session.runs.filter((run) => !run.turnId)
+  const completed = latest?.runs.filter((run) => run.status === 'success').length ?? 0
+
   return (
     <aside className="panel runs">
       <div className="panel-header">
-        <span>运行记录</span>
-        <span className="badge">{runs.length} 条</span>
+        <span>本次执行</span>
+        <button className="icon-btn" title="收起执行面板" onClick={props.onToggle}>»</button>
       </div>
-      <div className="run-list">
-        {runs.length === 0 && <div className="empty-state">暂无运行记录。</div>}
-        {runs.map((r) => (
-          <div key={r.id} className="run-item">
-            <span className={`status-dot ${r.status}`} />
-            <div className="run-info">
-              <div className="run-title">{r.title}</div>
-              <div className="run-detail">{r.detail}</div>
+      <div className="ctx-body">
+        <CtxSection title="本轮进度">
+          {latest ? (
+            <div className="summary">
+              <div className="summary-top">
+                <span className={'status-tag ' + runState(latest)}>{runStateLabel(latest)}</span>
+                <span>{latest.runs.length} 个真实步骤</span>
+              </div>
+              <div className="summary-grid">
+                <span>完成 <strong>{completed}/{latest.runs.length}</strong></span>
+                <span>耗时 <strong>{runDuration(latest) ?? '—'}</strong></span>
+              </div>
             </div>
-            <div className="run-meta">
-              <span className={`status-tag ${r.status}`}>{statusLabel[r.status]}</span>
-              <span className="run-time">{r.time}</span>
-            </div>
-          </div>
-        ))}
+          ) : (
+            <div className="ctx-empty">本会话还没有执行记录。</div>
+          )}
+        </CtxSection>
+
+        <CtxSection title="运行步骤" count={latest?.runs.length ?? 0}>
+          {latest && latest.runs.length > 0 ? <RunSteps runs={latest.runs} compact /> : <div className="ctx-empty">暂无步骤。</div>}
+        </CtxSection>
+
+        <CtxSection title="后台记录" count={background.length} defaultOpen={false}>
+          {background.length > 0 ? <RunSteps runs={background} compact /> : <div className="ctx-empty">暂无后台记录。</div>}
+        </CtxSection>
+
+        <CtxSection title="公开计划" defaultOpen={false}>
+          <div className="ctx-empty">暂无 —— 当前版本不生成计划数据。</div>
+        </CtxSection>
+
+        <CtxSection title="变更文件" defaultOpen={false}>
+          <div className="ctx-empty">暂无 —— 当前版本不涉及文件读取或修改。</div>
+        </CtxSection>
       </div>
     </aside>
   )
@@ -244,12 +484,10 @@ function RunPanel({ runs }: { runs: RunRecord[] }): JSX.Element {
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<Session[]>(mockSessions)
   const [activeId, setActiveId] = useState<string>(mockSessions[0].id)
-  /** 待确认删除的会话（非 null 时显示确认弹窗） */
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
-  /** 启动存档是否已加载（加载完成前不渲染主界面、不触发保存） */
   const [loaded, setLoaded] = useState(false)
+  const [sideCollapsed, setSideCollapsed] = useState(false)
 
-  // 启动：从主进程恢复上次保存的会话列表和正在查看的会话；失败则保留演示会话
   useEffect(() => {
     let cancelled = false
     window.chuangdex.sessions
@@ -259,13 +497,12 @@ export default function App(): JSX.Element {
         if (result && isValidSessionData(result.sessions)) {
           const restored = result.sessions
           setSessions(restored)
-          const exists = restored.some((s) => s.id === result.activeId)
-          setActiveId(exists ? result.activeId : restored[0].id)
+          setActiveId(restored.some((session) => session.id === result.activeId) ? result.activeId : restored[0].id)
         }
         setLoaded(true)
       })
-      .catch((err) => {
-        console.error('会话存档加载失败，使用初始会话:', err)
+      .catch((error) => {
+        console.error('会话存档加载失败，使用初始会话:', error)
         if (!cancelled) setLoaded(true)
       })
     return () => {
@@ -273,53 +510,19 @@ export default function App(): JSX.Element {
     }
   }, [])
 
-  // 持久化：会话数据或激活会话有任何变化（新建/删除/改名/自动命名/消息/运行记录）
-  // 都把最新状态交给主进程落盘
   useEffect(() => {
     if (!loaded) return
     window.chuangdex.sessions
       .save({ activeId, sessions })
-      .catch((err) => console.error('会话保存失败:', err))
+      .catch((error) => console.error('会话保存失败:', error))
   }, [sessions, activeId, loaded])
 
   const active = useMemo(
-    () => sessions.find((s) => s.id === activeId) ?? sessions[0],
+    () => sessions.find((session) => session.id === activeId) ?? sessions[0],
     [sessions, activeId]
   )
+  const activeTurns = useMemo(() => groupTurns(active), [active])
 
-  // 新建会话：创建干净的空会话并立即切换过去
-  const handleCreate = (): void => {
-    const fresh = makeEmptySession(sessions)
-    setSessions((prev) => [fresh, ...prev])
-    setActiveId(fresh.id)
-  }
-
-  // 点击删除入口：先弹出确认，不直接删
-  const handleRequestDelete = (id: string): void => {
-    const target = sessions.find((s) => s.id === id)
-    if (target) setPendingDelete(target)
-  }
-
-  // 确认删除：优先切到被删会话的相邻会话；全部删光时自动新建一个空会话
-  const handleConfirmDelete = (): void => {
-    if (!pendingDelete) return
-    const idx = sessions.findIndex((s) => s.id === pendingDelete.id)
-    const remaining = sessions.filter((s) => s.id !== pendingDelete.id)
-
-    if (remaining.length === 0) {
-      const fresh = makeEmptySession(remaining)
-      setSessions([fresh])
-      setActiveId(fresh.id)
-    } else {
-      setSessions(remaining)
-      if (pendingDelete.id === activeId) {
-        setActiveId(remaining[Math.min(idx, remaining.length - 1)].id)
-      }
-    }
-    setPendingDelete(null)
-  }
-
-  // 订阅 Agent 服务从主进程推回来的运行记录，实时追加/更新到右侧面板
   useEffect(() => {
     const unsubscribe = window.chuangdex.agent.onRunEvent((event) => {
       const record: RunRecord = {
@@ -327,74 +530,115 @@ export default function App(): JSX.Element {
         title: event.title,
         detail: event.detail,
         status: event.status,
-        time: event.time
+        time: event.time,
+        ts: event.ts,
+        turnId: event.turnId
       }
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === event.sessionId ? { ...s, runs: upsertRun(s.runs, record) } : s
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === event.sessionId ? { ...session, runs: upsertRun(session.runs, record) } : session
         )
       )
     })
     return unsubscribe
   }, [])
 
-  // 手动重命名：打上 renamed 标记，此后自动命名不会再覆盖
-  const handleRename = (id: string, title: string): void => {
-    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title, renamed: true } : s)))
+  const handleCreate = (): void => {
+    const fresh = makeEmptySession(sessions)
+    setSessions((previous) => [fresh, ...previous])
+    setActiveId(fresh.id)
   }
 
-  // 消息流向：界面 → preload 安全桥 → 主进程 Agent 服务 →（运行记录实时回流）→ 最终回复
+  const handleRequestDelete = (id: string): void => {
+    const target = sessions.find((session) => session.id === id)
+    if (target) setPendingDelete(target)
+  }
+
+  const handleConfirmDelete = (): void => {
+    if (!pendingDelete) return
+    const index = sessions.findIndex((session) => session.id === pendingDelete.id)
+    const remaining = sessions.filter((session) => session.id !== pendingDelete.id)
+    if (remaining.length === 0) {
+      const fresh = makeEmptySession(remaining)
+      setSessions([fresh])
+      setActiveId(fresh.id)
+    } else {
+      setSessions(remaining)
+      if (pendingDelete.id === activeId) setActiveId(remaining[Math.min(index, remaining.length - 1)].id)
+    }
+    setPendingDelete(null)
+  }
+
+  const handleRename = (id: string, title: string): void => {
+    setSessions((previous) =>
+      previous.map((session) => (session.id === id ? { ...session, title, renamed: true } : session))
+    )
+  }
+
   const handleSend = (text: string): void => {
-    const t = nowTime()
-    const userMsg: Message = { id: `m-${Date.now()}-u`, role: 'user', content: text, time: t }
-
-    // 是否“新会话的第一条消息”：是则稍后触发自动命名（手动命名过的会话不触发）
+    const time = nowTime()
+    const turnId = newTurnId()
+    const userMessage: Message = {
+      id: 'm-' + Date.now() + '-u',
+      role: 'user',
+      content: text,
+      time,
+      turnId
+    }
     const shouldAutoTitle = active.messages.length === 0 && !active.renamed
+    const history = active.messages.slice(-12).map((message) => ({ role: message.role, content: message.content }))
 
-    // 多轮上下文：只取当前会话最近 12 条消息（仅角色+内容，不含运行记录等界面数据）
-    const history = active.messages.slice(-12).map((m) => ({ role: m.role, content: m.content }))
-
-    // 先在本地展示用户消息
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === activeId
-          ? { ...s, preview: text.slice(0, 30), updatedAt: t, messages: [...s.messages, userMsg] }
-          : s
+    setSessions((previous) =>
+      previous.map((session) =>
+        session.id === activeId
+          ? { ...session, preview: text.slice(0, 30), updatedAt: time, messages: [...session.messages, userMessage] }
+          : session
       )
     )
 
-    // 通过 Electron 安全通信通道交给 Agent 服务；回复到达后追加到对话区
     window.chuangdex.agent
-      .sendMessage({ sessionId: activeId, text, history })
+      .sendMessage({ sessionId: activeId, text, history, turnId })
       .then((reply) => {
-        const assistantMsg: Message = {
-          id: `m-${Date.now()}-a`,
+        const assistantMessage: Message = {
+          id: 'm-' + Date.now() + '-a',
           role: 'assistant',
           content: reply.content,
-          time: nowTime()
+          time: nowTime(),
+          turnId
         }
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === reply.sessionId ? { ...s, messages: [...s.messages, assistantMsg] } : s
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === reply.sessionId ? { ...session, messages: [...session.messages, assistantMessage] } : session
           )
         )
       })
-      .catch((err) => console.error('Agent 服务调用失败:', err))
+      .catch((error) => {
+        const assistantMessage: Message = {
+          id: 'm-' + Date.now() + '-e',
+          role: 'assistant',
+          content: '发送失败：' + (error instanceof Error ? error.message : String(error)) + '。请重试。',
+          time: nowTime(),
+          turnId
+        }
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === activeId ? { ...session, messages: [...session.messages, assistantMessage] } : session
+          )
+        )
+      })
 
-    // 独立的自动命名调用：与上面的聊天回复并行进行，失败不影响对话
     if (shouldAutoTitle) {
       window.chuangdex.agent
         .generateTitle({ sessionId: activeId, text })
         .then(({ title }) => {
-          if (!title) return // 命名失败：保留“新对话”
-          setSessions((prev) =>
-            prev.map((s) =>
-              // 落名前再次检查 renamed：等待模型期间用户可能已手动改名
-              s.id === activeId && !s.renamed ? { ...s, title } : s
+          if (!title) return
+          setSessions((previous) =>
+            previous.map((session) =>
+              session.id === activeId && !session.renamed ? { ...session, title } : session
             )
           )
         })
-        .catch((err) => console.error('自动命名失败（不影响对话）:', err))
+        .catch((error) => console.error('自动命名失败（不影响对话）:', error))
     }
   }
 
@@ -407,7 +651,10 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div className="app">
+    <div
+      className="app"
+      style={{ gridTemplateColumns: sideCollapsed ? '260px minmax(0, 1fr) 46px' : '260px minmax(0, 1fr) 330px' }}
+    >
       <SessionList
         sessions={sessions}
         activeId={activeId}
@@ -415,12 +662,17 @@ export default function App(): JSX.Element {
         onCreate={handleCreate}
         onDelete={handleRequestDelete}
       />
-      <ChatPanel session={active} onSend={handleSend} onRename={handleRename} />
-      <RunPanel runs={active.runs} />
+      <ChatPanel session={active} turns={activeTurns} onSend={handleSend} onRename={handleRename} />
+      <SidePanel
+        session={active}
+        turns={activeTurns}
+        collapsed={sideCollapsed}
+        onToggle={() => setSideCollapsed((value) => !value)}
+      />
 
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-title">删除会话</div>
             <div className="modal-body">
               确定删除「{pendingDelete.title}」吗？其中的消息和运行记录将一并删除，此操作不可恢复。
