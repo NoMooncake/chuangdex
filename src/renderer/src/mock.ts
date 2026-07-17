@@ -5,6 +5,8 @@ export interface Message {
   role: Role
   content: string
   time: string
+  /** 界面分组标记：同一轮对话（用户消息→回复）共享一个 turnId */
+  turnId?: string
 }
 
 export type RunStatus = 'success' | 'running' | 'failed'
@@ -15,6 +17,10 @@ export interface RunRecord {
   detail: string
   status: RunStatus
   time: string
+  /** 真实时间戳（epoch ms），用于计算耗时 */
+  ts?: number
+  /** 属于哪一轮对话；无 turnId 的是后台记录（如自动命名） */
+  turnId?: string
 }
 
 export interface Session {
@@ -30,75 +36,118 @@ export interface Session {
   runs: RunRecord[]
 }
 
+/**
+ * 演示会话：内容只反映 ChuangDex 当前真实能力
+ * （Kimi 对话、daily-briefing Skill、飞书定时提醒），
+ * 运行记录与 Agent 服务实际产生的步骤保持一致。
+ */
 export const mockSessions: Session[] = [
   {
     id: 's1',
     demo: true,
-    title: '整理本周会议纪要',
-    preview: '已生成 3 条待办，是否同步到日历？',
+    title: '项目事项整理成日报',
+    preview: '已按日报格式生成，可直接发群。',
     updatedAt: '10:42',
     messages: [
-      { id: 'm1', role: 'user', content: '帮我把本周的会议纪要整理成摘要。', time: '10:38' },
+      {
+        id: 'm1',
+        role: 'user',
+        turnId: 't-1',
+        content: '帮我把这些事项整理成日报：修复了登录页闪退，开了新版首页评审会，下午联调推送接口。',
+        time: '10:38'
+      },
       {
         id: 'm2',
         role: 'assistant',
-        content: '好的。我找到了 4 场会议，已提取要点并生成摘要草案。',
+        turnId: 't-1',
+        content:
+          '# 工作简报\n\n## 一、今日进展\n- 修复登录页闪退问题\n- 完成新版首页评审\n- 推进推送接口联调\n\n## 二、问题与风险\n- 无\n\n## 三、明日计划\n- 继续推送接口联调（待确认）',
         time: '10:39'
-      },
-      { id: 'm3', role: 'user', content: '把里面的行动项单独列出来。', time: '10:41' },
-      {
-        id: 'm4',
-        role: 'assistant',
-        content: '已生成 3 条待办：\n1. 确认新版首页视觉稿\n2. 输出 Q3 复盘文档\n3. 跟进部署流水线告警\n\n是否同步到日历？',
-        time: '10:42'
       }
     ],
     runs: [
-      { id: 'r1', title: '搜索会议记录', detail: '检索本周 4 场会议', status: 'success', time: '10:38:12' },
-      { id: 'r2', title: '生成摘要', detail: '模型推理 · 1280 tokens', status: 'success', time: '10:39:03' },
-      { id: 'r3', title: '提取行动项', detail: '模型推理 · 642 tokens', status: 'success', time: '10:41:47' },
-      { id: 'r4', title: '等待用户确认', detail: '同步日历前需要确认', status: 'running', time: '10:42:01' }
+      { id: 'r1', title: '收到消息', detail: '会话 s1 · 38 个字符', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r2', title: '读取会话历史', detail: '当前会话 · 提供 0 条', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r3', title: '已带入 0 条上下文消息', detail: '本会话暂无历史，仅发送当前消息', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r4', title: '发现 Skills', detail: '共 1 个可用：daily-briefing', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r5', title: '选择 daily-briefing', detail: '命中关键词：日报', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r6', title: '准备调用模型', detail: '已注入「daily-briefing」的工作说明', status: 'success', time: '10:38:02', turnId: 't-1' },
+      { id: 'r7', title: '正在按 Skill 生成回复', detail: '响应正常', status: 'success', time: '10:38:05', turnId: 't-1' },
+      { id: 'r8', title: '已收到模型回复', detail: '2.4s · 输入 312 / 输出 96 tokens', status: 'success', time: '10:38:05', turnId: 't-1' },
+      { id: 'r9', title: 'Skill 执行完成', detail: 'daily-briefing · 回复 89 个字符', status: 'success', time: '10:38:05', turnId: 't-1' }
     ]
   },
   {
     id: 's2',
     demo: true,
-    title: '排查构建失败',
-    preview: 'CI 在第 3 步失败：依赖安装超时',
+    title: '量子纠缠是什么',
+    preview: '用一句话概括：两个粒子的状态相互关联……',
     updatedAt: '昨天',
     messages: [
-      { id: 'm1', role: 'user', content: '昨晚的 CI 构建为什么挂了？', time: '昨天 21:03' },
+      { id: 'm1', role: 'user', turnId: 't-1', content: '量子纠缠是什么？用通俗的话解释。', time: '昨天 21:03' },
       {
         id: 'm2',
         role: 'assistant',
-        content: '我拉取了日志：第 3 步依赖安装超时（registry 响应 30s 无数据）。建议重试或切换镜像源。',
+        turnId: 't-1',
+        content: '一句话：两个粒子形成纠缠后，无论相距多远，测量其中一个，另一个的状态会立刻确定。可以把它想象成一对“心有灵犀”的硬币。',
         time: '昨天 21:04'
+      },
+      { id: 'm3', role: 'user', turnId: 't-2', content: '那它能用来超光速通信吗？', time: '昨天 21:05' },
+      {
+        id: 'm4',
+        role: 'assistant',
+        turnId: 't-2',
+        content: '不能。测量结果是随机的，你无法控制它变成什么，所以传不了任何信息——超光速通信依然不成立。',
+        time: '昨天 21:06'
       }
     ],
     runs: [
-      { id: 'r1', title: '读取 CI 日志', detail: 'build #482 · 1.2 MB', status: 'success', time: '21:03:40' },
-      { id: 'r2', title: '分析失败原因', detail: '定位到 step 3/6', status: 'success', time: '21:04:02' },
-      { id: 'r3', title: '重试依赖安装', detail: '网络超时，已放弃', status: 'failed', time: '21:04:31' }
+      { id: 'r1', title: '收到消息', detail: '会话 s2 · 16 个字符', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r2', title: '读取会话历史', detail: '当前会话 · 提供 0 条', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r3', title: '已带入 0 条上下文消息', detail: '本会话暂无历史，仅发送当前消息', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r4', title: '发现 Skills', detail: '共 1 个可用：daily-briefing', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r5', title: '未匹配 Skill', detail: '按普通对话直接调用模型', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r6', title: '准备调用模型', detail: 'kimi-for-coding', status: 'success', time: '21:03:11', turnId: 't-1' },
+      { id: 'r7', title: '正在等待 kimi 回复', detail: '响应正常', status: 'success', time: '21:04:02', turnId: 't-1' },
+      { id: 'r8', title: '已收到模型回复', detail: '1.8s · 输入 260 / 输出 74 tokens', status: 'success', time: '21:04:02', turnId: 't-1' },
+      { id: 'r9', title: '已完成', detail: '回复 68 个字符', status: 'success', time: '21:04:02', turnId: 't-1' },
+      { id: 'r10', title: '收到消息', detail: '会话 s2 · 12 个字符', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r11', title: '读取会话历史', detail: '当前会话 · 提供 2 条', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r12', title: '已带入 2 条上下文消息', detail: '最近 2 条历史 + 当前消息，按时间顺序发送', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r13', title: '发现 Skills', detail: '共 1 个可用：daily-briefing', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r14', title: '未匹配 Skill', detail: '按普通对话直接调用模型', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r15', title: '准备调用模型', detail: 'kimi-for-coding', status: 'success', time: '21:05:40', turnId: 't-2' },
+      { id: 'r16', title: '正在等待 kimi 回复', detail: '响应正常', status: 'success', time: '21:06:01', turnId: 't-2' },
+      { id: 'r17', title: '已收到模型回复', detail: '2.1s · 输入 402 / 输出 66 tokens', status: 'success', time: '21:06:01', turnId: 't-2' },
+      { id: 'r18', title: '已完成', detail: '回复 55 个字符', status: 'success', time: '21:06:01', turnId: 't-2' }
     ]
   },
   {
     id: 's3',
     demo: true,
-    title: '周报草稿',
-    preview: '还差数据部分，需要你提供数据源。',
+    title: '飞书定时提醒怎么设',
+    preview: '在飞书里直接对机器人说即可……',
     updatedAt: '周一',
     messages: [
-      { id: 'm1', role: 'user', content: '按模板起草这周周报。', time: '周一 18:20' },
+      { id: 'm1', role: 'user', turnId: 't-1', content: '怎么让 ChuangDex 每个工作日早上提醒我开站会？', time: '周一 18:20' },
       {
         id: 'm2',
         role: 'assistant',
-        content: '草稿已完成 70%，数据部分缺少来源。请提供数据文件或告诉我从哪里取数。',
+        turnId: 't-1',
+        content: '在飞书里直接对机器人说一句就行，例如：“每个工作日 09:30 提醒我开站会。”它会确认任务，到点自动在该会话里提醒你。',
         time: '周一 18:22'
       }
     ],
     runs: [
-      { id: 'r1', title: '加载周报模板', detail: 'template: weekly-v2', status: 'success', time: '18:20:11' },
-      { id: 'r2', title: '生成正文草稿', detail: '模型推理 · 2140 tokens', status: 'success', time: '18:21:55' }
+      { id: 'r1', title: '收到消息', detail: '会话 s3 · 21 个字符', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r2', title: '读取会话历史', detail: '当前会话 · 提供 0 条', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r3', title: '已带入 0 条上下文消息', detail: '本会话暂无历史，仅发送当前消息', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r4', title: '发现 Skills', detail: '共 1 个可用：daily-briefing', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r5', title: '未匹配 Skill', detail: '按普通对话直接调用模型', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r6', title: '准备调用模型', detail: 'kimi-for-coding', status: 'success', time: '18:20:11', turnId: 't-1' },
+      { id: 'r7', title: '正在等待 kimi 回复', detail: '响应正常', status: 'success', time: '18:21:55', turnId: 't-1' },
+      { id: 'r8', title: '已收到模型回复', detail: '1.6s · 输入 288 / 输出 71 tokens', status: 'success', time: '18:21:55', turnId: 't-1' },
+      { id: 'r9', title: '已完成', detail: '回复 63 个字符', status: 'success', time: '18:21:55', turnId: 't-1' }
     ]
   }
 ]

@@ -11,6 +11,11 @@ export interface AgentRunEvent {
   detail: string
   status: RunStatus
   time: string
+  /** 真实时间戳（epoch ms），用于计算耗时 */
+  ts?: number
+  /** 界面分组标记：同一轮对话（用户消息→回复）的记录共享一个 turnId；
+   *  自动命名等后台调用不带 turnId，界面据此分开归组 */
+  turnId?: string
 }
 
 /** Agent 服务处理完成后的最终回复 */
@@ -37,6 +42,8 @@ export interface AgentSendPayload {
   text: string
   /** 当前会话的最近历史消息（按时间正序）；Agent 服务会再做过滤和截断 */
   history?: HistoryMessage[]
+  /** 界面生成的轮次标记，Agent 服务原样贴到本轮所有运行记录上 */
+  turnId?: string
 }
 
 /** IPC 通道名，集中在这一处定义，避免两端写错 */
