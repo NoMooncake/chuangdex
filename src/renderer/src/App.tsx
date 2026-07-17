@@ -286,6 +286,7 @@ function ChatPanel(props: {
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     setEditingTitle(false)
@@ -294,6 +295,15 @@ function ChatPanel(props: {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
   }, [props.session.id, props.session.messages.length, props.session.runs.length])
+
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    const next = Math.min(textarea.scrollHeight, 160)
+    textarea.style.height = next + 'px'
+    textarea.style.overflowY = textarea.scrollHeight > 160 ? 'auto' : 'hidden'
+  }, [draft])
 
   const submit = (): void => {
     const text = draft.trim()
@@ -383,6 +393,7 @@ function ChatPanel(props: {
         }}
       >
         <textarea
+          ref={textareaRef}
           value={draft}
           placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
           onChange={(event) => setDraft(event.target.value)}
