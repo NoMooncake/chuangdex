@@ -589,35 +589,45 @@ button {
 }
 
 .composer {
-  display: flex;
   flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
   gap: 10px;
-  padding: 14px 24px 18px;
-  border-top: 1px solid var(--border);
+  margin: 0 24px 20px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-panel);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
 }
 
 .composer textarea {
-  min-height: 42px;
-  max-height: 160px;
   min-width: 0;
   flex: 1;
+  min-height: 42px;
+  max-height: 160px;
   resize: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: none;
+  border-radius: 8px;
   outline: none;
-  padding: 10px 12px;
-  background: var(--bg-panel);
+  padding: 8px 10px;
+  background: transparent;
   color: var(--text);
+  font: inherit;
+  line-height: 1.6;
+  overflow-y: auto;
 }
 
 .composer textarea:focus {
-  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 
 .send-btn {
+  flex-shrink: 0;
   border: none;
   border-radius: var(--radius);
   padding: 0 18px;
+  height: 38px;
   background: var(--accent);
   color: #fff;
   cursor: pointer;
