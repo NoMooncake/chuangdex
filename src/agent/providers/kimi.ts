@@ -2,7 +2,7 @@
 // 使用 OpenAI 兼容的 /chat/completions 接口，Node 自带 fetch，无新增依赖。
 // 将来接入其他厂商时，参照本文件在 providers/ 下新建实现即可。
 
-import type { ChatMessage, ModelProvider, ModelRequest, ModelResponse } from './types'
+import type { ChatMessage, ModelProvider, ModelRequest, ModelResponse, ToolCall } from './types'
 
 export interface KimiConfig {
   apiKey: string
@@ -44,7 +44,9 @@ export class KimiProvider implements ModelProvider {
         },
         body: JSON.stringify({
           model: this.config.model,
-          messages: request.messages
+          messages: request.messages.map(toKimiMessage),
+          ...(request.tools?.length ? { tools: request.tools } : {}),
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {})
         }),
         signal: controller.signal
       })
@@ -56,18 +58,29 @@ export class KimiProvider implements ModelProvider {
 
       const data = (await res.json()) as {
         model?: string
-        choices?: { message?: { content?: unknown } }[]
+        choices?: {
+          finish_reason?: string
+          message?: {
+            content?: unknown
+            tool_calls?: unknown
+          }
+        }[]
         usage?: { prompt_tokens?: number; completion_tokens?: number }
       }
 
-      const content = data.choices?.[0]?.message?.content
-      if (typeof content !== 'string' || content.length === 0) {
-        throw new Error('Kimi 响应格式异常：缺少 message.content')
+      const choice = data.choices?.[0]
+      const rawContent = choice?.message?.content
+      const content = typeof rawContent === 'string' ? rawContent : ''
+      const toolCalls = parseToolCalls(choice?.message?.tool_calls)
+      if (!content && toolCalls.length === 0) {
+        throw new Error('Kimi 响应格式异常：既没有回复内容，也没有工具调用')
       }
 
       return {
         content,
         model: data.model ?? this.config.model,
+        finishReason: choice?.finish_reason,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         usage: data.usage
           ? {
               promptTokens: data.usage.prompt_tokens ?? 0,
@@ -81,6 +94,43 @@ export class KimiProvider implements ModelProvider {
       clearTimeout(timer)
     }
   }
+}
+
+/** 把内部 camelCase 消息转换为 OpenAI 兼容协议字段。 */
+function toKimiMessage(message: ChatMessage): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    role: message.role,
+    content: message.content
+  }
+  if (message.toolCalls?.length) result.tool_calls = message.toolCalls
+  if (message.toolCallId) result.tool_call_id = message.toolCallId
+  if (message.name) result.name = message.name
+  return result
+}
+
+function parseToolCalls(raw: unknown): ToolCall[] {
+  if (!Array.isArray(raw)) return []
+  const calls: ToolCall[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const fn = record.function
+    if (!fn || typeof fn !== 'object') continue
+    const fnRecord = fn as Record<string, unknown>
+    if (
+      typeof record.id !== 'string' ||
+      typeof fnRecord.name !== 'string' ||
+      typeof fnRecord.arguments !== 'string'
+    ) {
+      continue
+    }
+    calls.push({
+      id: record.id,
+      type: 'function',
+      function: { name: fnRecord.name, arguments: fnRecord.arguments }
+    })
+  }
+  return calls
 }
 
 /** 把底层错误翻译成用户能看懂的简短原因 */

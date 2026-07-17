@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { ChuangdexAgentService } from '../agent/service'
 import { KimiProvider } from '../agent/providers/kimi'
@@ -7,6 +8,7 @@ import { TaskScheduler, TaskStore, type ScheduledTask, formatTime } from '../cha
 import {
   AGENT_CHANNELS,
   AgentSendPayload,
+  APP_OPEN_EXTERNAL,
   SKILL_CHANNELS,
   TASK_CHANNELS,
   SESSION_CHANNELS,
@@ -35,8 +37,9 @@ let taskScheduler: TaskScheduler | null = null
 
 function setupAgent(): void {
   const kimiConfig = loadKimiConfig(app.getAppPath())
-  const skills = loadSkills(join(app.getAppPath(), 'skills'))
-  agentService = new ChuangdexAgentService(new KimiProvider(kimiConfig), skills)
+  const skills = loadAllSkills()
+  ensureUserSkillsDir()
+  agentService = new ChuangdexAgentService(new KimiProvider(kimiConfig), skills, userSkillsDir())
 
   if (kimiConfig) {
     console.log(`[chuangdex] Kimi 配置已加载：${kimiConfig.baseUrl} · ${kimiConfig.model}`)
@@ -48,6 +51,28 @@ function setupAgent(): void {
       ? `[chuangdex] 发现 ${skills.length} 个 Skill：${skills.map((s) => s.name).join('、')}`
       : '[chuangdex] 未发现 Skill（skills/ 目录为空或不存在）'
   )
+}
+
+/** 用户 Skill 持久化目录：本机数据目录，不写入项目源码 */
+function userSkillsDir(): string {
+  return join(app.getPath('userData'), 'skills')
+}
+
+/** 确保用户 Skill 目录存在 */
+function ensureUserSkillsDir(): void {
+  try {
+    mkdirSync(userSkillsDir(), { recursive: true })
+  } catch (err) {
+    console.warn('[chuangdex] 创建用户 Skill 目录失败：', err)
+  }
+}
+
+/** 加载内置 Skill 和用户安装的 Skill；内置同名 Skill 优先 */
+function loadAllSkills(): import('../agent/skills/types').Skill[] {
+  const builtIn = loadSkills(join(app.getAppPath(), 'skills'))
+  const user = loadSkills(userSkillsDir())
+  const builtInNames = new Set(builtIn.map((skill) => skill.name))
+  return [...builtIn, ...user.filter((skill) => !builtInNames.has(skill.name))]
 }
 
 function registerAgentIpc(): void {
@@ -84,6 +109,11 @@ function registerAgentIpc(): void {
   ipcMain.handle(SESSION_CHANNELS.save, (_event, payload: SessionsSavePayload) => {
     scheduleSaveSessions(payload)
   })
+
+  // 渲染进程点击 Markdown 链接时，由主进程使用系统浏览器打开
+  ipcMain.handle(APP_OPEN_EXTERNAL, async (_event, url: string) => {
+    await shell.openExternal(url)
+  })
 }
 
 function scheduledTasksPath(): string {
@@ -112,11 +142,10 @@ function currentTaskScheduler(): TaskScheduler {
 function setupDataBridge(): void {
   ipcMain.handle(SKILL_CHANNELS.load, () => {
     try {
-      const skills = loadSkills(join(app.getAppPath(), 'skills'))
+      const skills = loadAllSkills()
       return skills.map((skill) => ({
         name: skill.name,
-        description: skill.description,
-        triggers: skill.triggers
+        description: skill.description
       }))
     } catch (err) {
       console.warn('[chuangdex] 加载 Skills 失败：', err)

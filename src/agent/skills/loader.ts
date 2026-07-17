@@ -1,9 +1,10 @@
 // Skill 发现：扫描项目 skills/ 目录，解析每个子目录中的 SKILL.md。
-// SKILL.md = YAML frontmatter（name / description / triggers）+ 正文（工作说明）。
+// SKILL.md = YAML frontmatter（name / description）+ 正文（工作说明）。
 // 只在主进程运行，启动时执行一次。
 
 import { existsSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { parseDocument } from 'yaml'
 import type { Skill } from './types'
 
 /** 扫描 skillsDir，返回发现的全部 Skill；目录不存在或文件不合格时跳过 */
@@ -27,26 +28,29 @@ export function loadSkills(skillsDir: string): Skill[] {
 }
 
 /** 解析一个 SKILL.md；缺少必需字段时返回 null */
-function parseSkillFile(path: string, content: string): Skill | null {
+export function parseSkillFile(path: string, content: string): Skill | null {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
   if (!match) return null
+  if (match[1].length > 64 * 1024) return null
 
-  // 极简 frontmatter 解析：只支持「key: value」单行，triggers 用逗号分隔
-  const meta: Record<string, string> = {}
-  for (const line of match[1].split(/\r?\n/)) {
-    const m = line.match(/^(\w[\w-]*):\s*(.+)$/)
-    if (m) meta[m[1]] = m[2].trim()
+  let meta: Record<string, unknown>
+  try {
+    const document = parseDocument(match[1])
+    if (document.errors.length > 0) return null
+    const parsed = document.toJS({ maxAliasCount: 10 }) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    meta = parsed as Record<string, unknown>
+  } catch {
+    return null
   }
 
-  if (!meta.name || !meta.description) return null
+  const name = typeof meta.name === 'string' ? meta.name.trim() : ''
+  const description = typeof meta.description === 'string' ? meta.description.trim() : ''
+  if (!name || !description) return null
 
   return {
-    name: meta.name,
-    description: meta.description,
-    triggers: (meta.triggers ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    name,
+    description,
     instructions: match[2].trim(),
     path
   }

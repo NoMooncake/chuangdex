@@ -1,7 +1,6 @@
 ---
 name: daily-briefing
 description: 当用户提供项目事项并要求整理日报、项目摘要或工作简报时，生成清晰的结构化简报
-triggers: 日报, 简报, 项目摘要, 工作简报, 整理日报, briefing
 ---
 
 # 工作说明

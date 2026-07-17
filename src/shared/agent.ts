@@ -57,7 +57,6 @@ export const AGENT_CHANNELS = {
 export interface SkillInfo {
   name: string
   description: string
-  triggers: string[]
 }
 
 export type TaskRepeatMode = 'daily' | 'weekdays'
@@ -112,3 +111,6 @@ export const SESSION_CHANNELS = {
   load: 'sessions:load',
   save: 'sessions:save'
 } as const
+
+/** 渲染进程点击外部链接时使用 */
+export const APP_OPEN_EXTERNAL = 'app:open-external' as const
