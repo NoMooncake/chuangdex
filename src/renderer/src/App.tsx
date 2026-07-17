@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Message, mockSessions, RunRecord, Session } from './mock'
+import { MarkdownMessage } from './MarkdownMessage'
 import type { SkillInfo, TaskCreateInput, TaskInfo, TaskRepeatMode, TaskUpdateInput } from '../../shared/agent'
 
 function nowTime(): string {
@@ -401,7 +402,9 @@ function ChatPanel(props: {
             {turn.assistant && (
               <div className="message-row assistant">
                 <div className="message-body">
-                  <div className="message-content">{turn.assistant.content}</div>
+                  <div className="message-content">
+                    <MarkdownMessage content={turn.assistant.content} />
+                  </div>
                   <div className="message-time">{turn.assistant.time}</div>
                 </div>
               </div>
@@ -771,7 +774,6 @@ function SkillsView({ skills }: { skills: SkillInfo[] }): JSX.Element {
             <div key={skill.name} className="data-item">
               <div className="data-title">{skill.name}</div>
               <div className="data-description">{skill.description}</div>
-              <div className="data-meta">触发词：{skill.triggers.join('、')}</div>
             </div>
           ))
         )}
@@ -818,6 +820,11 @@ export default function App(): JSX.Element {
     setTasks(nextTasks)
   }
 
+  const refreshSkills = async (): Promise<void> => {
+    const nextSkills = await window.chuangdex.skills.load()
+    setSkills(nextSkills)
+  }
+
   useEffect(() => {
     let cancelled = false
     window.chuangdex.sessions
@@ -856,10 +863,7 @@ export default function App(): JSX.Element {
   // 查看“Skills”时，从主进程读取真实 Skills 数据
   useEffect(() => {
     if (view !== 'skills') return
-    window.chuangdex.skills
-      .load()
-      .then(setSkills)
-      .catch((error) => console.error('加载 Skills 失败：', error))
+    refreshSkills().catch((error) => console.error('加载 Skills 失败：', error))
   }, [view])
 
   const active = useMemo(
@@ -901,7 +905,10 @@ export default function App(): JSX.Element {
   }
 
   const handleViewScheduled = (): void => setView('scheduled')
-  const handleViewSkills = (): void => setView('skills')
+  const handleViewSkills = (): void => {
+    setView('skills')
+    refreshSkills().catch((error) => console.error('加载 Skills 失败：', error))
+  }
 
   const handleCreateTask = async (input: TaskCreateInput): Promise<void> => {
     await window.chuangdex.tasks.create(input)

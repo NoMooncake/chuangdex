@@ -5,6 +5,7 @@ import {
   AgentRunEvent,
   AgentSendPayload,
   AgentTitleReply,
+  APP_OPEN_EXTERNAL,
   SESSION_CHANNELS,
   SessionsLoadResult,
   SessionsSavePayload,
@@ -62,7 +63,10 @@ const api = {
     create: (input: TaskCreateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.create, input),
     update: (input: TaskUpdateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.update, input),
     remove: (id: string): Promise<void> => ipcRenderer.invoke(TASK_CHANNELS.remove, id)
-  }
+  },
+
+  /** 外部链接：Markdown 中的链接通过主进程调用系统浏览器打开 */
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke(APP_OPEN_EXTERNAL, url)
 }
 
 contextBridge.exposeInMainWorld('chuangdex', api)

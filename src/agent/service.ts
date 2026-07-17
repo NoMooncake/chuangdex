@@ -2,7 +2,7 @@
 // ChuangDex Agent 内核入口（本地模块）
 //
 // 处理一条消息的完整流程：
-//   收到消息 → 发现 Skills → 选择 Skill（触发词匹配）
+//   收到消息 → 发现 Skills → 由 Agent 判断是否需要 Skill
 //   → 组装提示词（命中时注入 Skill 工作说明）→ 调用模型 → 返回回复
 //
 // Skill 不是另一个模型，而是一套可复用的工作方法：
@@ -11,9 +11,16 @@
 // ─────────────────────────────────────────────────────────────
 
 import type { AgentReply, AgentRunEvent, AgentTitleReply, HistoryMessage, RunStatus } from '../shared/agent'
-import type { ChatMessage, ModelProvider } from './providers/types'
-import { matchSkill, type SkillMatch } from './skills/matcher'
-import type { Skill } from './skills/types'
+import type { ChatMessage, ModelProvider, ToolCall, ToolDefinition } from './providers/types'
+import type { Skill, SkillMatch } from './skills/types'
+import { SkillSelector } from './skills/selector'
+import {
+  canonicalRepoKey,
+  downloadSkillPackage,
+  extractGitHubUrls,
+  installSkillPackageToUserDir,
+  parseGitHubRepo
+} from './skills/installer'
 
 export interface AgentRequest {
   sessionId: string
@@ -31,7 +38,9 @@ export type RunEventSink = (event: AgentRunEvent) => void
 
 /** ChuangDex 助手的基础人格设定（始终随请求发给模型） */
 const BASE_SYSTEM_PROMPT =
-  '你是 ChuangDex 桌面客户端的内置助手。请简洁、准确地回答用户的问题，使用中文。'
+  '你是 ChuangDex 桌面客户端的内置助手。请简洁、准确地回答用户的问题，使用中文。' +
+  '当用户明确要求从其提供的 GitHub 链接安装 Skill 时，应调用安装工具；' +
+  '用户只是询问、评估或讨论链接时不要安装。只有工具返回成功后，才能告诉用户已经安装。'
 
 /**
  * 定时任务到点执行专用提示词。
@@ -79,6 +88,38 @@ const UNCONFIGURED_HINT =
 
 /** 多轮上下文：带入模型的历史消息上限（另有当前消息） */
 const MAX_HISTORY_MESSAGES = 12
+const MAX_TOOL_ROUNDS = 3
+
+const INSTALL_SKILL_TOOL: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'install_skill_from_github',
+    description:
+      '从用户明确提供的公开 GitHub 仓库或具体 Skill 目录安装 Skill。' +
+      '只有用户明确要求安装、添加或引入该 Skill 时才调用；用户只是询问、评估或讨论链接时不要调用。' +
+      '工具会下载完整 Skill 目录但不会执行其中的脚本或命令。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['url'],
+      properties: {
+        url: {
+          type: 'string',
+          description: '用户在对话中提供的 GitHub 仓库或具体 Skill 目录 URL'
+        }
+      }
+    }
+  }
+}
+
+interface InstallToolResult {
+  ok: boolean
+  message: string
+  name?: string
+  description?: string
+  source?: string
+  fileCount?: number
+}
 
 let runSeq = 0
 
@@ -89,8 +130,14 @@ export class ChuangdexAgentService {
   constructor(
     private readonly model: ModelProvider,
     /** 启动时发现的全部 Skill（由主进程扫描 skills/ 目录后注入） */
-    private readonly skills: Skill[] = []
-  ) {}
+    private readonly skills: Skill[] = [],
+    /** 用户安装的 Skill 持久化目录，运行时安装只写入此处 */
+    private readonly userSkillsDir: string = ''
+  ) {
+    this.skillSelector = new SkillSelector(model)
+  }
+
+  private readonly skillSelector: SkillSelector
 
   /**
    * 处理一条用户消息。
@@ -149,19 +196,56 @@ export class ChuangdexAgentService {
       )
     )
 
-    // 3. 选择 Skill（触发关键词匹配；未命中则按普通对话处理）
-    const match = matchSkill(this.skills, text)
-    if (match) {
+    // 3. 选择 Skill（由 Agent 理解用户意图后决定；未命中/判断失败均按普通对话处理）
+    const selectingId = this.nextId()
+    emit(
+      this.makeRun(
+        sessionId,
+        '正在判断是否需要 Skill',
+        '根据用户请求和可用 Skills 分析意图…',
+        'running',
+        selectingId
+      )
+    )
+
+    let match: SkillMatch | null = null
+    try {
+      const selection = await this.skillSelector.select(this.skills, text, history)
+      if (selection.match) {
+        match = selection.match
+        emit(
+          this.makeRun(
+            sessionId,
+            `决定使用 ${match.skill.name}`,
+            `用途：${match.skill.description}`,
+            'success',
+            selectingId
+          )
+        )
+      } else {
+        emit(
+          this.makeRun(
+            sessionId,
+            '决定不使用 Skill',
+            selection.state === 'failed' && selection.error
+              ? `判断失败：${selection.error}，按普通对话处理`
+              : '当前请求没有合适的 Skill',
+            'success',
+            selectingId
+          )
+        )
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
       emit(
         this.makeRun(
           sessionId,
-          `选择 ${match.skill.name}`,
-          `命中关键词：${match.matchedTriggers.join('、')}`,
-          'success'
+          '决定不使用 Skill',
+          `判断异常：${reason}，按普通对话处理`,
+          'success',
+          selectingId
         )
       )
-    } else {
-      emit(this.makeRun(sessionId, '未匹配 Skill', '按普通对话直接调用模型', 'success'))
     }
 
     // 4. 准备调用模型（配置缺失时直接失败，给出可操作的提示）
@@ -191,9 +275,38 @@ export class ChuangdexAgentService {
       { role: 'user', content: text }
     ]
 
+    const tools = scheduled ? undefined : [INSTALL_SKILL_TOOL]
+    const authorizedRepoKeys = collectAuthorizedRepoKeys(text, history)
     const startedAt = Date.now()
+    let installedFallback: InstallToolResult | null = null
     try {
-      const response = await this.model.chat({ messages })
+      let response = await this.model.chat({ messages, tools, toolChoice: tools ? 'auto' : undefined })
+      let toolRounds = 0
+
+      while (response.toolCalls?.length && toolRounds < MAX_TOOL_ROUNDS) {
+        toolRounds += 1
+        messages.push({ role: 'assistant', content: response.content || null, toolCalls: response.toolCalls })
+
+        for (const toolCall of response.toolCalls) {
+          const result = await this.executeToolCall(sessionId, toolCall, authorizedRepoKeys, emit)
+          if (result.ok) installedFallback = result
+          messages.push({
+            role: 'tool',
+            name: toolCall.function.name,
+            toolCallId: toolCall.id,
+            content: JSON.stringify(result)
+          })
+        }
+
+        response = await this.model.chat({
+          messages,
+          tools,
+          toolChoice: toolRounds >= MAX_TOOL_ROUNDS ? 'none' : 'auto'
+        })
+      }
+      if (response.toolCalls?.length) {
+        throw new Error(`本轮工具调用超过 ${MAX_TOOL_ROUNDS} 轮，已停止`)
+      }
       const latency = ((Date.now() - startedAt) / 1000).toFixed(1)
 
       emit(this.makeRun(sessionId, runningTitle, '响应正常', 'success', waitingId))
@@ -215,8 +328,10 @@ export class ChuangdexAgentService {
       emit(
         this.makeRun(
           sessionId,
-          scheduled ? '任务内容已生成' : match ? 'Skill 执行完成' : '已完成',
-          match
+          scheduled ? '任务内容已生成' : installedFallback ? '工具执行完成' : match ? 'Skill 执行完成' : '已完成',
+          installedFallback
+            ? `${installedFallback.name} · 回复 ${response.content.length} 个字符`
+            : match
             ? `${match.skill.name} · 回复 ${response.content.length} 个字符`
             : `回复 ${response.content.length} 个字符`,
           'success'
@@ -227,10 +342,154 @@ export class ChuangdexAgentService {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       emit(this.makeRun(sessionId, runningTitle, reason, 'failed', waitingId))
+      if (installedFallback?.ok) {
+        return {
+          sessionId,
+          content: `已安装 Skill：**${installedFallback.name}**\n来源：${installedFallback.source}\n${installedFallback.message}`
+        }
+      }
       return {
         sessionId,
         content: `调用 ${this.model.name} 失败：${reason}。请检查 config/models.local.json 配置或网络后重试。`
       }
+    }
+  }
+
+  private async executeToolCall(
+    sessionId: string,
+    toolCall: ToolCall,
+    authorizedRepoKeys: Set<string>,
+    emit: RunEventSink
+  ): Promise<InstallToolResult> {
+    const decidingId = this.nextId()
+    emit(
+      this.makeRun(
+        sessionId,
+        'Agent 决定调用工具',
+        `${toolCall.function.name} · 参数由模型生成`,
+        'success',
+        decidingId
+      )
+    )
+
+    if (toolCall.function.name !== INSTALL_SKILL_TOOL.function.name) {
+      return { ok: false, message: `未知工具：${toolCall.function.name}` }
+    }
+    let args: Record<string, unknown>
+    try {
+      args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>
+    } catch {
+      return { ok: false, message: '工具参数不是有效 JSON' }
+    }
+    const url = typeof args.url === 'string' ? args.url.trim() : ''
+    const repo = parseGitHubRepo(url)
+    if (!repo) return { ok: false, message: '无法识别 GitHub Skill 链接' }
+    if (!authorizedRepoKeys.has(canonicalRepoKey(repo))) {
+      return { ok: false, message: '安全限制：只能安装用户在对话中明确提供的 GitHub 链接' }
+    }
+
+    return this.executeInstallSkillTool(sessionId, url, repo, emit)
+  }
+
+  private async executeInstallSkillTool(
+    sessionId: string,
+    url: string,
+    repo: NonNullable<ReturnType<typeof parseGitHubRepo>>,
+    emit: RunEventSink
+  ): Promise<InstallToolResult> {
+    const downloadingId = this.nextId()
+    emit(
+      this.makeRun(
+        sessionId,
+        '正在下载完整 Skill',
+        `${repo.owner}/${repo.repo}${repo.path ? `/${repo.path}` : ''} · 只保存文件，不执行代码`,
+        'running',
+        downloadingId
+      )
+    )
+
+    let downloaded: Awaited<ReturnType<typeof downloadSkillPackage>>
+    try {
+      downloaded = await downloadSkillPackage(repo, url)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      emit(
+        this.makeRun(
+          sessionId,
+          '正在下载完整 Skill',
+          reason,
+          'failed',
+          downloadingId
+        )
+      )
+      return { ok: false, message: reason, source: url }
+    }
+    emit(
+      this.makeRun(
+        sessionId,
+        '正在下载完整 Skill',
+        `已下载并校验 ${downloaded.files.length} 个文件 · ${downloaded.skill.name}`,
+        'success',
+        downloadingId
+      )
+    )
+
+    if (this.skills.some((skill) => skill.name === downloaded.skill.name)) {
+      const message = `已存在名为「${downloaded.skill.name}」的 Skill，未覆盖现有内容`
+      emit(
+        this.makeRun(
+          sessionId,
+          '正在检查 Skill',
+          message,
+          'failed',
+          this.nextId()
+        )
+      )
+      return { ok: false, message, source: url }
+    }
+
+    const installingId = this.nextId()
+    emit(
+      this.makeRun(
+        sessionId,
+        '正在安装 Skill',
+        `原子写入 ${downloaded.files.length} 个文件：${downloaded.skill.name}…`,
+        'running',
+        installingId
+      )
+    )
+    try {
+      const installed = installSkillPackageToUserDir(downloaded, this.userSkillsDir)
+      this.skills.push(installed)
+      emit(
+        this.makeRun(
+          sessionId,
+          '安装完成',
+          `${installed.name} · ${installed.description}`,
+          'success',
+          installingId
+        )
+      )
+      return {
+        ok: true,
+        name: installed.name,
+        description: installed.description,
+        source: url,
+        fileCount: downloaded.files.length,
+        message: `完整 Skill 已安装，共 ${downloaded.files.length} 个文件；无需重启，下一轮对话立即生效。`
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      emit(
+        this.makeRun(
+          sessionId,
+          '正在安装 Skill',
+          `写入失败：${reason}`,
+          'failed',
+          installingId
+        )
+      )
+      return { ok: false, message: `写入本机文件失败：${reason}`, source: url }
     }
   }
 
@@ -359,6 +618,28 @@ function buildSystemPrompt(match: SkillMatch | null, scheduled: boolean): string
     `## 工作说明`,
     skill.instructions
   ].join('\n')
+}
+
+/**
+ * 工具只能使用用户自己在当前消息或历史用户消息中给出的链接。
+ * 这是一层授权边界，不参与判断用户是否有安装意图。
+ */
+function collectAuthorizedRepoKeys(
+  text: string,
+  history: { role: 'user' | 'assistant'; content: string }[]
+): Set<string> {
+  const userTexts = [
+    ...history.filter((message) => message.role === 'user').map((message) => message.content),
+    text
+  ]
+  const keys = new Set<string>()
+  for (const userText of userTexts) {
+    for (const url of extractGitHubUrls(userText)) {
+      const repo = parseGitHubRepo(url)
+      if (repo) keys.add(canonicalRepoKey(repo))
+    }
+  }
+  return keys
 }
 
 /**
