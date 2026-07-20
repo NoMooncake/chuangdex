@@ -114,3 +114,7 @@ export const SESSION_CHANNELS = {
 
 /** 渲染进程点击外部链接时使用 */
 export const APP_OPEN_EXTERNAL = 'app:open-external' as const
+
+/** 桌面主题：同时用于网页界面和 Electron 原生标题栏 */
+export type AppTheme = 'light' | 'dark'
+export const APP_SET_THEME = 'app:set-theme' as const
