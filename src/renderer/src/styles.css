@@ -1059,6 +1059,110 @@ button {
   line-height: 1.45;
 }
 
+/* MCP：本地 stdio Server 管理 */
+.mcp-editor .task-source-note {
+  margin-bottom: 0;
+}
+
+.mcp-enabled-field {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mcp-enabled-field input {
+  accent-color: var(--accent);
+}
+
+.mcp-server-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-status {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.mcp-status.connected {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.mcp-status.connecting {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+}
+
+.mcp-status.error {
+  background: var(--red-dim);
+  color: var(--red);
+}
+
+.mcp-status.disabled,
+.mcp-status.disconnected {
+  background: var(--bg-active);
+  color: var(--text-dim);
+}
+
+.mcp-command {
+  overflow-wrap: anywhere;
+}
+
+.mcp-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--task-error-border);
+  border-radius: 7px;
+  background: var(--red-dim);
+  color: var(--red);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.mcp-tools-title {
+  margin-top: 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.mcp-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.mcp-tool small {
+  min-width: 0;
+  color: var(--text-dim);
+  font-family: inherit;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 /* ── 右栏：保留原有执行面板 ─────────────────── */
 
 .runs {

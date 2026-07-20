@@ -4,6 +4,10 @@ import { join } from 'path'
 import { ChuangdexAgentService } from '../agent/service'
 import { KimiProvider } from '../agent/providers/kimi'
 import { loadSkills } from '../agent/skills/loader'
+import { MemoryStore } from '../agent/memory/store'
+import { CommandRunner } from '../agent/tools/command'
+import { McpManager } from '../agent/mcp/manager'
+import { McpServerStore } from '../agent/mcp/store'
 import { TaskScheduler, TaskStore, type ScheduledTask, formatTime } from '../channels/scheduler'
 import {
   AGENT_CHANNELS,
@@ -11,6 +15,10 @@ import {
   APP_OPEN_EXTERNAL,
   APP_SET_THEME,
   AppTheme,
+  MEMORY_CHANNELS,
+  MCP_CHANNELS,
+  McpServerInput,
+  McpServerUpdateInput,
   SKILL_CHANNELS,
   TASK_CHANNELS,
   SESSION_CHANNELS,
@@ -37,11 +45,26 @@ let agentService: ChuangdexAgentService
 // 才能立即同步到内存中的巡检任务，而不是只改写 JSON 文件。
 let taskScheduler: TaskScheduler | null = null
 
+/** 长期记忆存储：本机用户数据目录，与 Agent 服务共享同一实例 */
+let memoryStore: MemoryStore | null = null
+
+/** 本地 stdio MCP 连接管理器；只供桌面 Agent 和 MCP 管理页使用。 */
+let mcpManager: McpManager | null = null
+
 function setupAgent(): void {
   const kimiConfig = loadKimiConfig(app.getAppPath())
   const skills = loadAllSkills()
   ensureUserSkillsDir()
-  agentService = new ChuangdexAgentService(new KimiProvider(kimiConfig), skills, userSkillsDir())
+  memoryStore = new MemoryStore(memoriesFilePath())
+  mcpManager = new McpManager(new McpServerStore(mcpServersFilePath()), commandWorkspaceDir())
+  agentService = new ChuangdexAgentService(
+    new KimiProvider(kimiConfig),
+    skills,
+    userSkillsDir(),
+    memoryStore,
+    new CommandRunner(commandWorkspaceDir()),
+    mcpManager
+  )
 
   if (kimiConfig) {
     console.log(`[chuangdex] Kimi 配置已加载：${kimiConfig.baseUrl} · ${kimiConfig.model}`)
@@ -53,11 +76,30 @@ function setupAgent(): void {
       ? `[chuangdex] 发现 ${skills.length} 个 Skill：${skills.map((s) => s.name).join('、')}`
       : '[chuangdex] 未发现 Skill（skills/ 目录为空或不存在）'
   )
+  console.log(`[chuangdex] 命令工作目录：${commandWorkspaceDir()}`)
+  void mcpManager.startAll().then(() => {
+    const connected = mcpManager?.listServers().filter((server) => server.status === 'connected') ?? []
+    console.log(`[chuangdex] MCP：已连接 ${connected.length} 个本地 stdio Server`)
+  })
 }
 
 /** 用户 Skill 持久化目录：本机数据目录，不写入项目源码 */
 function userSkillsDir(): string {
   return join(app.getPath('userData'), 'skills')
+}
+
+/** 长期记忆文件路径：本机用户数据目录 */
+function memoriesFilePath(): string {
+  return join(app.getPath('userData'), 'memories.json')
+}
+
+/** 命令始终从独立工作目录启动，不使用项目源码或应用配置目录。 */
+function commandWorkspaceDir(): string {
+  return join(app.getPath('documents'), 'ChuangDex Workspace')
+}
+
+function mcpServersFilePath(): string {
+  return join(app.getPath('userData'), 'mcp-servers.json')
 }
 
 /** 确保用户 Skill 目录存在 */
@@ -81,7 +123,7 @@ function registerAgentIpc(): void {
   // 渲染进程通过 ipcRenderer.invoke 调用；处理过程中的每条运行记录
   // 都通过 webContents.send 实时推回对应的渲染进程。
   ipcMain.handle(AGENT_CHANNELS.sendMessage, async (event, payload: AgentSendPayload) => {
-    return agentService.handleMessage(payload, (run) => {
+    return agentService.handleMessage({ ...payload, source: 'desktop' }, (run) => {
       if (!event.sender.isDestroyed()) {
         event.sender.send(AGENT_CHANNELS.runEvent, run)
       }
@@ -149,6 +191,11 @@ function currentTaskScheduler(): TaskScheduler {
   return taskScheduler
 }
 
+function currentMcpManager(): McpManager {
+  if (!mcpManager) throw new Error('MCP 管理器尚未启动')
+  return mcpManager
+}
+
 /** 桌面端数据桥：只暴露必要的 Skills / 定时任务数据，不暴露任何密钥 */
 function setupDataBridge(): void {
   ipcMain.handle(SKILL_CHANNELS.load, () => {
@@ -162,6 +209,43 @@ function setupDataBridge(): void {
       console.warn('[chuangdex] 加载 Skills 失败：', err)
       return []
     }
+  })
+
+  // 长期记忆：只读和删除；新增/修改由 Agent 服务在对话中自主处理
+  ipcMain.handle(MEMORY_CHANNELS.load, () => {
+    try {
+      return memoryStore?.load() ?? []
+    } catch (err) {
+      console.warn('[chuangdex] 加载记忆失败：', err)
+      return []
+    }
+  })
+
+  ipcMain.handle(MEMORY_CHANNELS.remove, (_event, id: string) => {
+    try {
+      memoryStore?.remove(id)
+    } catch (err) {
+      console.warn('[chuangdex] 删除记忆失败：', err)
+      throw err
+    }
+  })
+
+  ipcMain.handle(MCP_CHANNELS.load, () => currentMcpManager().listServers())
+
+  ipcMain.handle(MCP_CHANNELS.create, async (_event, input: McpServerInput) => {
+    return currentMcpManager().create(input)
+  })
+
+  ipcMain.handle(MCP_CHANNELS.update, async (_event, input: McpServerUpdateInput) => {
+    return currentMcpManager().update(input)
+  })
+
+  ipcMain.handle(MCP_CHANNELS.remove, async (_event, id: string) => {
+    await currentMcpManager().remove(id)
+  })
+
+  ipcMain.handle(MCP_CHANNELS.reconnect, async (_event, id: string) => {
+    return currentMcpManager().reconnect(id)
   })
 
   ipcMain.handle(TASK_CHANNELS.load, () => {
@@ -271,5 +355,9 @@ if (!hasSingleInstanceLock) {
   // Windows/Linux: quit when all windows are closed.
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('before-quit', () => {
+    void mcpManager?.closeAll()
   })
 }
