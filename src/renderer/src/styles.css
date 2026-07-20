@@ -9,14 +9,63 @@
   --text-dim: #8a90a3;
   --muted: #787f96;
   --accent: #4f8cff;
+  --accent-rgb: 79, 140, 255;
   --green: #34c77b;
   --green-dim: rgba(52, 199, 123, 0.12);
   --yellow: #e5b567;
   --yellow-dim: rgba(229, 181, 103, 0.12);
   --red: #e5536a;
   --red-dim: rgba(229, 83, 106, 0.12);
+  --sidebar-bg: #12141b;
+  --user-msg-bg: #1b2a47;
+  --user-msg-border: #29406b;
+  --md-blockquote-bg: rgba(255, 255, 255, 0.04);
+  --md-inline-code-bg: rgba(255, 255, 255, 0.08);
+  --md-pre-bg: #0d0e13;
+  --md-table-header-bg: rgba(255, 255, 255, 0.06);
+  --md-link-hover: #6ee7ff;
+  --task-editor-border: rgba(79, 140, 255, 0.55);
+  --task-error-border: rgba(229, 83, 106, 0.45);
+  --error-border-soft: rgba(229, 83, 106, 0.35);
+  --shadow: rgba(0, 0, 0, 0.15);
+  --modal-shadow: rgba(0, 0, 0, 0.5);
+  --scrollbar-thumb-hover: #333a4c;
   --radius: 10px;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+:root.light {
+  --bg: #ffffff;
+  --bg-panel: #f5f6f8;
+  --bg-hover: #eef0f4;
+  --bg-active: #e4e7ed;
+  --border: #d8dde4;
+  --border-soft: #ebedf0;
+  --text: #1a1d23;
+  --text-dim: #5b6270;
+  --muted: #8a929f;
+  --accent: #2563eb;
+  --accent-rgb: 37, 99, 235;
+  --green: #16a34a;
+  --green-dim: rgba(22, 163, 74, 0.12);
+  --yellow: #d97706;
+  --yellow-dim: rgba(217, 119, 6, 0.12);
+  --red: #dc2626;
+  --red-dim: rgba(220, 38, 38, 0.12);
+  --sidebar-bg: #f3f4f6;
+  --user-msg-bg: #dbeafe;
+  --user-msg-border: #bfdbfe;
+  --md-blockquote-bg: rgba(0, 0, 0, 0.04);
+  --md-inline-code-bg: rgba(0, 0, 0, 0.06);
+  --md-pre-bg: #f5f7fa;
+  --md-table-header-bg: rgba(0, 0, 0, 0.04);
+  --md-link-hover: #1d4ed8;
+  --task-editor-border: rgba(37, 99, 235, 0.55);
+  --task-error-border: rgba(220, 38, 38, 0.35);
+  --error-border-soft: rgba(220, 38, 38, 0.25);
+  --shadow: rgba(0, 0, 0, 0.08);
+  --modal-shadow: rgba(0, 0, 0, 0.2);
+  --scrollbar-thumb-hover: #b8c0cc;
 }
 
 * {
@@ -106,7 +155,7 @@ button {
 /* ── 左栏：会话列表 ─────────────────────────── */
 
 .sidebar {
-  background: #12141b;
+  background: var(--sidebar-bg);
 }
 
 .sidebar-nav {
@@ -280,9 +329,28 @@ button {
 }
 
 .footer-status {
-  margin-left: auto;
   color: var(--text-dim);
   font-size: 12px;
+}
+
+.theme-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.theme-toggle:hover {
+  background: var(--bg-active);
 }
 
 /* ── 中栏：仅调整对话与执行过程的排版 ───────── */
@@ -384,8 +452,8 @@ button {
 }
 
 .message-row.user .message-content {
-  border-color: #29406b;
-  background: #1b2a47;
+  border-color: var(--user-msg-border);
+  background: var(--user-msg-bg);
 }
 
 .message-time {
@@ -440,7 +508,7 @@ button {
 }
 
 .summary-chip.error {
-  border-color: rgba(229, 83, 106, 0.35);
+  border-color: var(--error-border-soft);
   background: var(--red-dim);
   color: var(--red);
 }
@@ -640,7 +708,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg-panel);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 14px var(--shadow);
 }
 
 .composer textarea {
@@ -720,7 +788,7 @@ button {
   margin: 0.5em 0;
   padding: 0.45em 0.9em;
   border-left: 3px solid var(--accent);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--md-blockquote-bg);
   color: var(--text-dim);
   border-radius: 0 6px 6px 0;
 }
@@ -742,11 +810,11 @@ button {
 }
 
 .message-content .md-link:hover {
-  color: #6ee7ff;
+  color: var(--md-link-hover);
 }
 
 .message-content .md-inline-code {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--md-inline-code-bg);
   padding: 0.1em 0.35em;
   border-radius: 4px;
   font-family: var(--mono);
@@ -768,7 +836,7 @@ button {
 
 .message-content .md-pre {
   margin: 0;
-  background: #0d0e13;
+  background: var(--md-pre-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
@@ -809,7 +877,7 @@ button {
 }
 
 .message-content .md-table th {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--md-table-header-bg);
   font-weight: 600;
 }
 
@@ -895,7 +963,7 @@ button {
   gap: 12px;
   margin-bottom: 14px;
   padding: 16px;
-  border: 1px solid rgba(79, 140, 255, 0.55);
+  border: 1px solid var(--task-editor-border);
   border-radius: var(--radius);
   background: var(--bg-panel);
 }
@@ -983,7 +1051,7 @@ button {
 
 .task-form-error {
   padding: 8px 10px;
-  border: 1px solid rgba(229, 83, 106, 0.45);
+  border: 1px solid var(--task-error-border);
   border-radius: 7px;
   background: var(--red-dim);
   color: var(--red);
@@ -1028,7 +1096,7 @@ button {
 }
 
 .ctx-title:hover {
-  color: #fff;
+  color: var(--text);
 }
 
 .ctx-count {
@@ -1137,7 +1205,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-panel);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 40px var(--modal-shadow);
 }
 
 .modal-title {
@@ -1230,5 +1298,5 @@ button {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #333a4c;
+  background: var(--scrollbar-thumb-hover);
 }

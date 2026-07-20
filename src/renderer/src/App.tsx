@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Message, mockSessions, RunRecord, Session } from './mock'
 import { MarkdownMessage } from './MarkdownMessage'
 import type { SkillInfo, TaskCreateInput, TaskInfo, TaskRepeatMode, TaskUpdateInput } from '../../shared/agent'
@@ -140,10 +140,12 @@ function SessionList(props: {
   sessions: Session[]
   activeId: string
   view: 'chat' | 'scheduled' | 'skills'
+  theme: 'light' | 'dark'
   onSelect: (id: string) => void
   onNewChat: () => void
   onViewScheduled: () => void
   onViewSkills: () => void
+  onToggleTheme: () => void
   onDelete: (id: string) => void
 }): JSX.Element {
   return (
@@ -214,6 +216,13 @@ function SessionList(props: {
         <span className="avatar">C</span>
         <span className="footer-name">Chuang</span>
         <span className="footer-status">本地模式</span>
+        <button
+          className="icon-btn theme-toggle"
+          title={props.theme === 'dark' ? '切换为浅色' : '切换为深色'}
+          onClick={props.onToggleTheme}
+        >
+          {props.theme === 'dark' ? '☀' : '🌙'}
+        </button>
       </div>
     </aside>
   )
@@ -811,6 +820,10 @@ export default function App(): JSX.Element {
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [sideCollapsed, setSideCollapsed] = useState(false)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('chuangdex-theme')
+    return saved === 'light' ? 'light' : 'dark'
+  })
   const [view, setView] = useState<'chat' | 'scheduled' | 'skills'>('chat')
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -853,6 +866,12 @@ export default function App(): JSX.Element {
       .save({ activeId, sessions })
       .catch((error) => console.error('会话保存失败:', error))
   }, [sessions, activeId, loaded])
+
+  useEffect(() => {
+    window.chuangdex
+      .setTheme(theme)
+      .catch((error) => console.error('同步原生标题栏主题失败：', error))
+  }, [theme])
 
   // 查看“已安排”时，从主进程读取真实定时任务数据
   useEffect(() => {
@@ -909,6 +928,19 @@ export default function App(): JSX.Element {
     setView('skills')
     refreshSkills().catch((error) => console.error('加载 Skills 失败：', error))
   }
+
+  const toggleTheme = useCallback((): void => {
+    setTheme((prev) => {
+      const next = prev === 'light' ? 'dark' : 'light'
+      localStorage.setItem('chuangdex-theme', next)
+      if (next === 'light') {
+        document.documentElement.classList.add('light')
+      } else {
+        document.documentElement.classList.remove('light')
+      }
+      return next
+    })
+  }, [])
 
   const handleCreateTask = async (input: TaskCreateInput): Promise<void> => {
     await window.chuangdex.tasks.create(input)
@@ -1035,10 +1067,12 @@ export default function App(): JSX.Element {
         sessions={sessions}
         activeId={activeId}
         view={view}
+        theme={theme}
         onSelect={handleSelectSession}
         onNewChat={handleNewChat}
         onViewScheduled={handleViewScheduled}
         onViewSkills={handleViewSkills}
+        onToggleTheme={toggleTheme}
         onDelete={handleRequestDelete}
       />
 

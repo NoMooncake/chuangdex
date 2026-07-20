@@ -6,6 +6,8 @@ import {
   AgentSendPayload,
   AgentTitleReply,
   APP_OPEN_EXTERNAL,
+  APP_SET_THEME,
+  AppTheme,
   SESSION_CHANNELS,
   SessionsLoadResult,
   SessionsSavePayload,
@@ -66,7 +68,10 @@ const api = {
   },
 
   /** 外部链接：Markdown 中的链接通过主进程调用系统浏览器打开 */
-  openExternal: (url: string): Promise<void> => ipcRenderer.invoke(APP_OPEN_EXTERNAL, url)
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke(APP_OPEN_EXTERNAL, url),
+
+  /** 同步网页主题与 Electron 原生标题栏 */
+  setTheme: (theme: AppTheme): Promise<void> => ipcRenderer.invoke(APP_SET_THEME, theme)
 }
 
 contextBridge.exposeInMainWorld('chuangdex', api)

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { ChuangdexAgentService } from '../agent/service'
@@ -9,6 +9,8 @@ import {
   AGENT_CHANNELS,
   AgentSendPayload,
   APP_OPEN_EXTERNAL,
+  APP_SET_THEME,
+  AppTheme,
   SKILL_CHANNELS,
   TASK_CHANNELS,
   SESSION_CHANNELS,
@@ -113,6 +115,15 @@ function registerAgentIpc(): void {
   // 渲染进程点击 Markdown 链接时，由主进程使用系统浏览器打开
   ipcMain.handle(APP_OPEN_EXTERNAL, async (_event, url: string) => {
     await shell.openExternal(url)
+  })
+
+  // 网页主题切换时同步 macOS 原生标题栏，避免浅色界面仍保留深色顶栏。
+  ipcMain.handle(APP_SET_THEME, (event, theme: AppTheme) => {
+    if (theme !== 'light' && theme !== 'dark') return
+    nativeTheme.themeSource = theme
+    BrowserWindow.fromWebContents(event.sender)?.setBackgroundColor(
+      theme === 'light' ? '#ffffff' : '#0f1115'
+    )
   })
 }
 
