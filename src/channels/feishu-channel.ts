@@ -187,7 +187,7 @@ export class FeishuBotChannel {
     const sessionId = `feishu-${chatId}`
     const history = (this.histories.get(chatId) ?? []).slice(-12)
     const reply = await this.agent.handleMessage(
-      { sessionId, text, history, scheduled },
+      { sessionId, text, history, scheduled, source: 'feishu' },
       runSink ?? (() => {})
     )
     this.appendHistory(

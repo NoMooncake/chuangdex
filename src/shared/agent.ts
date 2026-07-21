@@ -112,6 +112,57 @@ export const SESSION_CHANNELS = {
   save: 'sessions:save'
 } as const
 
+/** 一条长期记忆 */
+export interface MemoryItem {
+  id: string
+  content: string
+  createdAt: number
+  updatedAt: number
+}
+
+export const MEMORY_CHANNELS = {
+  load: 'memories:load',
+  remove: 'memories:remove'
+} as const
+
+export type McpServerStatus = 'disabled' | 'connecting' | 'connected' | 'error' | 'disconnected'
+
+export interface McpToolInfo {
+  name: string
+  description: string
+}
+
+/** 桌面端展示的 MCP Server 信息；第一版不支持环境变量或远程鉴权。 */
+export interface McpServerInfo {
+  id: string
+  name: string
+  command: string
+  args: string[]
+  enabled: boolean
+  status: McpServerStatus
+  error?: string
+  tools: McpToolInfo[]
+}
+
+export interface McpServerInput {
+  name: string
+  command: string
+  args: string[]
+  enabled: boolean
+}
+
+export interface McpServerUpdateInput extends McpServerInput {
+  id: string
+}
+
+export const MCP_CHANNELS = {
+  load: 'mcp:load',
+  create: 'mcp:create',
+  update: 'mcp:update',
+  remove: 'mcp:remove',
+  reconnect: 'mcp:reconnect'
+} as const
+
 /** 渲染进程点击外部链接时使用 */
 export const APP_OPEN_EXTERNAL = 'app:open-external' as const
 

@@ -8,6 +8,12 @@ import {
   APP_OPEN_EXTERNAL,
   APP_SET_THEME,
   AppTheme,
+  MEMORY_CHANNELS,
+  MemoryItem,
+  MCP_CHANNELS,
+  McpServerInfo,
+  McpServerInput,
+  McpServerUpdateInput,
   SESSION_CHANNELS,
   SessionsLoadResult,
   SessionsSavePayload,
@@ -69,6 +75,24 @@ const api = {
 
   /** 外部链接：Markdown 中的链接通过主进程调用系统浏览器打开 */
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(APP_OPEN_EXTERNAL, url),
+
+  /** 长期记忆：只读和手动删除；新增/修改由 Agent 在对话中自主处理 */
+  memories: {
+    load: (): Promise<MemoryItem[]> => ipcRenderer.invoke(MEMORY_CHANNELS.load),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke(MEMORY_CHANNELS.remove, id)
+  },
+
+  /** 本地 stdio MCP：配置、连接状态和工具列表，不暴露环境变量或密钥。 */
+  mcp: {
+    load: (): Promise<McpServerInfo[]> => ipcRenderer.invoke(MCP_CHANNELS.load),
+    create: (input: McpServerInput): Promise<McpServerInfo> =>
+      ipcRenderer.invoke(MCP_CHANNELS.create, input),
+    update: (input: McpServerUpdateInput): Promise<McpServerInfo> =>
+      ipcRenderer.invoke(MCP_CHANNELS.update, input),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke(MCP_CHANNELS.remove, id),
+    reconnect: (id: string): Promise<McpServerInfo> =>
+      ipcRenderer.invoke(MCP_CHANNELS.reconnect, id)
+  },
 
   /** 同步网页主题与 Electron 原生标题栏 */
   setTheme: (theme: AppTheme): Promise<void> => ipcRenderer.invoke(APP_SET_THEME, theme)

@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Message, mockSessions, RunRecord, Session } from './mock'
 import { MarkdownMessage } from './MarkdownMessage'
-import type { SkillInfo, TaskCreateInput, TaskInfo, TaskRepeatMode, TaskUpdateInput } from '../../shared/agent'
+import type {
+  McpServerInfo,
+  McpServerInput,
+  McpServerUpdateInput,
+  MemoryItem,
+  SkillInfo,
+  TaskCreateInput,
+  TaskInfo,
+  TaskRepeatMode,
+  TaskUpdateInput
+} from '../../shared/agent'
+
+type AppView = 'chat' | 'scheduled' | 'skills' | 'mcp' | 'memories'
 
 function nowTime(): string {
   const d = new Date()
@@ -139,12 +151,14 @@ function runDuration(turn: TurnGroup): string | null {
 function SessionList(props: {
   sessions: Session[]
   activeId: string
-  view: 'chat' | 'scheduled' | 'skills'
+  view: AppView
   theme: 'light' | 'dark'
   onSelect: (id: string) => void
   onNewChat: () => void
   onViewScheduled: () => void
   onViewSkills: () => void
+  onViewMcp: () => void
+  onViewMemories: () => void
   onToggleTheme: () => void
   onDelete: (id: string) => void
 }): JSX.Element {
@@ -172,6 +186,20 @@ function SessionList(props: {
         >
           <span className="nav-icon">☰</span>
           <span>Skills</span>
+        </button>
+        <button
+          className={'nav-item' + (props.view === 'mcp' ? ' active' : '')}
+          onClick={props.onViewMcp}
+        >
+          <span className="nav-icon">⌘</span>
+          <span>MCP</span>
+        </button>
+        <button
+          className={'nav-item' + (props.view === 'memories' ? ' active' : '')}
+          onClick={props.onViewMemories}
+        >
+          <span className="nav-icon">🧠</span>
+          <span>记忆</span>
         </button>
       </nav>
 
@@ -791,6 +819,254 @@ function SkillsView({ skills }: { skills: SkillInfo[] }): JSX.Element {
   )
 }
 
+function mcpStatusLabel(status: McpServerInfo['status']): string {
+  if (status === 'connected') return '已连接'
+  if (status === 'connecting') return '连接中'
+  if (status === 'disabled') return '已停用'
+  if (status === 'error') return '连接失败'
+  return '已断开'
+}
+
+function McpServerEditor(props: {
+  server?: McpServerInfo
+  onSave: (input: McpServerInput) => Promise<void>
+  onCancel: () => void
+}): JSX.Element {
+  const [name, setName] = useState(props.server?.name ?? '')
+  const [command, setCommand] = useState(props.server?.command ?? '')
+  const [argsText, setArgsText] = useState(props.server?.args.join('\n') ?? '')
+  const [enabled, setEnabled] = useState(props.server?.enabled ?? true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault()
+    setError(null)
+    if (!name.trim() || !command.trim()) {
+      setError('请填写 Server 名称和启动命令。')
+      return
+    }
+    setSaving(true)
+    try {
+      await props.onSave({
+        name: name.trim(),
+        command: command.trim(),
+        args: argsText.split(/\r?\n/).map((arg) => arg.trim()).filter(Boolean),
+        enabled
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className="task-editor mcp-editor" onSubmit={(event) => void submit(event)}>
+      <div className="task-editor-title">{props.server ? '编辑 MCP Server' : '新增 MCP Server'}</div>
+      <div className="task-source-note">
+        第一版只支持本地 stdio，不支持环境变量、Token、远程 HTTP 或 OAuth。
+        MCP Server 是本机程序，只添加你信任的 Server；每个参数单独占一行。
+      </div>
+      <div className="task-editor-fields">
+        <label className="task-field">
+          <span>名称</span>
+          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 demo" />
+        </label>
+        <label className="task-field">
+          <span>启动命令</span>
+          <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="例如 node" />
+        </label>
+      </div>
+      <label className="task-field task-field-wide">
+        <span>参数（每行一项）</span>
+        <textarea
+          value={argsText}
+          onChange={(event) => setArgsText(event.target.value)}
+          placeholder={'/完整路径/server.mjs\n--example'}
+        />
+      </label>
+      <label className="mcp-enabled-field">
+        <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+        <span>启用并连接</span>
+      </label>
+      {error && <div className="task-form-error">{error}</div>}
+      <div className="task-editor-actions">
+        <button className="btn" type="button" disabled={saving} onClick={props.onCancel}>取消</button>
+        <button className="btn primary" type="submit" disabled={saving}>{saving ? '保存中…' : '保存'}</button>
+      </div>
+    </form>
+  )
+}
+
+function McpView(props: {
+  servers: McpServerInfo[]
+  onCreate: (input: McpServerInput) => Promise<void>
+  onUpdate: (input: McpServerUpdateInput) => Promise<void>
+  onRemove: (id: string) => Promise<void>
+  onReconnect: (id: string) => Promise<void>
+}): JSX.Element {
+  const [editor, setEditor] = useState<McpServerInfo | 'create' | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const runAction = async (id: string, action: () => Promise<void>): Promise<void> => {
+    setError(null)
+    setBusyId(id)
+    try {
+      await action()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <main className="panel chat data-view">
+      <div className="panel-header chat-header">
+        <span className="chat-title">MCP</span>
+        <button className="btn small primary" onClick={() => { setError(null); setEditor('create') }}>
+          新增 Server
+        </button>
+      </div>
+      <div className="data-list">
+        {editor && (
+          <McpServerEditor
+            key={editor === 'create' ? 'new-mcp' : editor.id}
+            server={editor === 'create' ? undefined : editor}
+            onSave={async (input) => {
+              if (editor === 'create') await props.onCreate(input)
+              else await props.onUpdate({ id: editor.id, ...input })
+              setEditor(null)
+            }}
+            onCancel={() => setEditor(null)}
+          />
+        )}
+
+        {error && <div className="task-form-error">{error}</div>}
+        {props.servers.length === 0 ? (
+          <div className="empty-state">暂无 MCP Server</div>
+        ) : (
+          props.servers.map((server) => (
+            <div key={server.id} className="data-item mcp-server-item">
+              <div className="data-item-head">
+                <div>
+                  <div className="mcp-server-title-row">
+                    <span className="data-title">{server.name}</span>
+                    <span className={`mcp-status ${server.status}`}>{mcpStatusLabel(server.status)}</span>
+                  </div>
+                  <div className="data-meta mcp-command">
+                    {server.command}{server.args.length > 0 ? ` · ${server.args.join(' · ')}` : ''}
+                  </div>
+                </div>
+                <div className="data-actions">
+                  {server.enabled && (
+                    <button
+                      className="data-action"
+                      disabled={busyId === server.id}
+                      onClick={() => void runAction(server.id, () => props.onReconnect(server.id))}
+                    >
+                      {busyId === server.id ? '连接中…' : '重连'}
+                    </button>
+                  )}
+                  <button className="data-action" disabled={busyId === server.id} onClick={() => setEditor(server)}>编辑</button>
+                  <button className="data-action danger" disabled={busyId === server.id} onClick={() => setPendingRemove(server.id)}>删除</button>
+                </div>
+              </div>
+              {server.error && <div className="mcp-error">{server.error}</div>}
+              <div className="mcp-tools-title">可用工具 {server.tools.length}</div>
+              {server.tools.length > 0 ? (
+                <div className="mcp-tools">
+                  {server.tools.map((tool) => (
+                    <div key={tool.name} className="mcp-tool">
+                      <span>{tool.name}</span>
+                      {tool.description && <small>{tool.description}</small>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="data-description">当前没有发现工具。</div>
+              )}
+              {pendingRemove === server.id && (
+                <div className="task-delete-confirm">
+                  <span>删除后会立即断开这个 Server。</span>
+                  <div className="data-actions">
+                    <button className="data-action" onClick={() => setPendingRemove(null)}>取消</button>
+                    <button
+                      className="data-action danger"
+                      disabled={busyId === server.id}
+                      onClick={() => void runAction(server.id, async () => {
+                        await props.onRemove(server.id)
+                        setPendingRemove(null)
+                        if (editor !== 'create' && editor?.id === server.id) setEditor(null)
+                      })}
+                    >
+                      确认删除
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </main>
+  )
+}
+
+function MemoryView(props: {
+  memories: MemoryItem[]
+  onRemove: (id: string) => Promise<void>
+}): JSX.Element {
+  const [removing, setRemoving] = useState<string | null>(null)
+
+  const handleRemove = async (id: string): Promise<void> => {
+    setRemoving(id)
+    try {
+      await props.onRemove(id)
+    } finally {
+      setRemoving(null)
+    }
+  }
+
+  return (
+    <main className="panel chat data-view">
+      <div className="panel-header chat-header">
+        <span className="chat-title">记忆</span>
+      </div>
+      <div className="data-list">
+        {props.memories.length === 0 ? (
+          <div className="empty-state">暂无长期记忆</div>
+        ) : (
+          props.memories.map((memory) => (
+            <div key={memory.id} className="data-item memory-item">
+              <div className="data-item-head">
+                <div>
+                  <div className="data-title">{memory.content}</div>
+                  <div className="data-meta">
+                    创建于 {new Date(memory.createdAt).toLocaleString('zh-CN')}
+                  </div>
+                </div>
+                <div className="data-actions">
+                  <button
+                    className="data-action danger"
+                    disabled={removing === memory.id}
+                    onClick={() => void handleRemove(memory.id)}
+                  >
+                    {removing === memory.id ? '删除中…' : '删除'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </main>
+  )
+}
+
 function EmptyRunPanel(props: { collapsed: boolean; onToggle: () => void }): JSX.Element {
   if (props.collapsed) {
     return (
@@ -824,9 +1100,11 @@ export default function App(): JSX.Element {
     const saved = localStorage.getItem('chuangdex-theme')
     return saved === 'light' ? 'light' : 'dark'
   })
-  const [view, setView] = useState<'chat' | 'scheduled' | 'skills'>('chat')
+  const [view, setView] = useState<AppView>('chat')
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
+  const [memories, setMemories] = useState<MemoryItem[]>([])
 
   const refreshTasks = async (): Promise<void> => {
     const nextTasks = await window.chuangdex.tasks.load()
@@ -836,6 +1114,16 @@ export default function App(): JSX.Element {
   const refreshSkills = async (): Promise<void> => {
     const nextSkills = await window.chuangdex.skills.load()
     setSkills(nextSkills)
+  }
+
+  const refreshMcp = async (): Promise<void> => {
+    const nextServers = await window.chuangdex.mcp.load()
+    setMcpServers(nextServers)
+  }
+
+  const refreshMemories = async (): Promise<void> => {
+    const nextMemories = await window.chuangdex.memories.load()
+    setMemories(nextMemories)
   }
 
   useEffect(() => {
@@ -885,6 +1173,18 @@ export default function App(): JSX.Element {
     refreshSkills().catch((error) => console.error('加载 Skills 失败：', error))
   }, [view])
 
+  // MCP 视图只展示本地 stdio Server 的实时状态和工具。
+  useEffect(() => {
+    if (view !== 'mcp') return
+    refreshMcp().catch((error) => console.error('加载 MCP Server 失败：', error))
+  }, [view])
+
+  // 查看“记忆”时，从主进程读取真实记忆数据
+  useEffect(() => {
+    if (view !== 'memories') return
+    refreshMemories().catch((error) => console.error('加载记忆失败：', error))
+  }, [view])
+
   const active = useMemo(
     () => sessions.find((session) => session.id === activeId) ?? sessions[0],
     [sessions, activeId]
@@ -928,6 +1228,19 @@ export default function App(): JSX.Element {
     setView('skills')
     refreshSkills().catch((error) => console.error('加载 Skills 失败：', error))
   }
+  const handleViewMcp = (): void => {
+    setView('mcp')
+    refreshMcp().catch((error) => console.error('加载 MCP Server 失败：', error))
+  }
+  const handleViewMemories = (): void => {
+    setView('memories')
+    refreshMemories().catch((error) => console.error('加载记忆失败：', error))
+  }
+
+  const handleRemoveMemory = async (id: string): Promise<void> => {
+    await window.chuangdex.memories.remove(id)
+    await refreshMemories()
+  }
 
   const toggleTheme = useCallback((): void => {
     setTheme((prev) => {
@@ -955,6 +1268,26 @@ export default function App(): JSX.Element {
   const handleRemoveTask = async (id: string): Promise<void> => {
     await window.chuangdex.tasks.remove(id)
     await refreshTasks()
+  }
+
+  const handleCreateMcp = async (input: McpServerInput): Promise<void> => {
+    await window.chuangdex.mcp.create(input)
+    await refreshMcp()
+  }
+
+  const handleUpdateMcp = async (input: McpServerUpdateInput): Promise<void> => {
+    await window.chuangdex.mcp.update(input)
+    await refreshMcp()
+  }
+
+  const handleRemoveMcp = async (id: string): Promise<void> => {
+    await window.chuangdex.mcp.remove(id)
+    await refreshMcp()
+  }
+
+  const handleReconnectMcp = async (id: string): Promise<void> => {
+    await window.chuangdex.mcp.reconnect(id)
+    await refreshMcp()
   }
 
   const handleRequestDelete = (id: string): void => {
@@ -1072,6 +1405,8 @@ export default function App(): JSX.Element {
         onNewChat={handleNewChat}
         onViewScheduled={handleViewScheduled}
         onViewSkills={handleViewSkills}
+        onViewMcp={handleViewMcp}
+        onViewMemories={handleViewMemories}
         onToggleTheme={toggleTheme}
         onDelete={handleRequestDelete}
       />
@@ -1106,6 +1441,32 @@ export default function App(): JSX.Element {
       {view === 'skills' && (
         <>
           <SkillsView skills={skills} />
+          <EmptyRunPanel
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((value) => !value)}
+          />
+        </>
+      )}
+
+      {view === 'mcp' && (
+        <>
+          <McpView
+            servers={mcpServers}
+            onCreate={handleCreateMcp}
+            onUpdate={handleUpdateMcp}
+            onRemove={handleRemoveMcp}
+            onReconnect={handleReconnectMcp}
+          />
+          <EmptyRunPanel
+            collapsed={sideCollapsed}
+            onToggle={() => setSideCollapsed((value) => !value)}
+          />
+        </>
+      )}
+
+      {view === 'memories' && (
+        <>
+          <MemoryView memories={memories} onRemove={handleRemoveMemory} />
           <EmptyRunPanel
             collapsed={sideCollapsed}
             onToggle={() => setSideCollapsed((value) => !value)}
