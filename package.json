@@ -9,6 +9,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "test:mcp": "esbuild scripts/mcp-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/mcp-smoke.mjs && node .tmp/mcp-smoke.mjs",
+    "test:review": "esbuild scripts/review-regressions.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/review-regressions.mjs && node .tmp/review-regressions.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json"
   },
   "devDependencies": {

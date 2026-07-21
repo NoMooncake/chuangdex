@@ -23,6 +23,11 @@ interface ServerRuntimeState {
   error?: string
 }
 
+interface PendingConnection {
+  generation: number
+  client: Client
+}
+
 export interface ResolvedMcpTool {
   exposedName: string
   serverId: string
@@ -49,8 +54,11 @@ const MAX_TOOL_PAGES = 20
 
 export class McpManager {
   private readonly connections = new Map<string, ServerConnection>()
+  private readonly pendingConnections = new Map<string, PendingConnection>()
   private readonly states = new Map<string, ServerRuntimeState>()
-  private readonly intentionalClose = new Set<string>()
+  private readonly generations = new Map<string, number>()
+  private readonly operationQueues = new Map<string, Promise<void>>()
+  private readonly intentionalClose = new WeakSet<Client>()
 
   constructor(
     private readonly store: McpServerStore,
@@ -63,7 +71,10 @@ export class McpManager {
       this.states.set(server.id, { status: server.enabled ? 'connecting' : 'disabled' })
     }
     await Promise.allSettled(
-      servers.filter((server) => server.enabled).map((server) => this.connect(server))
+      servers.filter((server) => server.enabled).map((server) => {
+        const generation = this.nextGeneration(server.id)
+        return this.enqueue(server.id, () => this.connect(server, generation))
+      })
     )
   }
 
@@ -74,31 +85,47 @@ export class McpManager {
   async create(input: McpServerInput): Promise<McpServerInfo> {
     const server = this.store.create(input)
     this.states.set(server.id, { status: server.enabled ? 'connecting' : 'disabled' })
-    if (server.enabled) await this.connect(server)
+    if (server.enabled) {
+      const generation = this.nextGeneration(server.id)
+      await this.enqueue(server.id, () => this.connect(server, generation))
+    }
     return this.toServerInfo(server)
   }
 
   async update(input: McpServerUpdateInput): Promise<McpServerInfo> {
-    await this.closeServer(input.id)
-    const server = this.store.update(input)
-    this.states.set(server.id, { status: server.enabled ? 'connecting' : 'disabled' })
-    if (server.enabled) await this.connect(server)
-    return this.toServerInfo(server)
+    const generation = this.nextGeneration(input.id)
+    const cancellation = this.cancelConnection(input.id)
+    return this.enqueue(input.id, async () => {
+      await cancellation
+      const server = this.store.update(input)
+      if (!this.isCurrent(input.id, generation)) return this.toServerInfo(server)
+      this.states.set(server.id, { status: server.enabled ? 'connecting' : 'disabled' })
+      if (server.enabled) await this.connect(server, generation)
+      return this.toServerInfo(server)
+    })
   }
 
   async remove(id: string): Promise<void> {
-    await this.closeServer(id)
-    this.store.remove(id)
-    this.states.delete(id)
+    this.nextGeneration(id)
+    const cancellation = this.cancelConnection(id)
+    await this.enqueue(id, async () => {
+      await cancellation
+      this.store.remove(id)
+      this.states.delete(id)
+    })
   }
 
   async reconnect(id: string): Promise<McpServerInfo> {
     const server = this.store.load().find((item) => item.id === id)
     if (!server) throw new Error('MCP Server 不存在')
     if (!server.enabled) throw new Error('请先启用这个 MCP Server')
-    await this.closeServer(id)
-    await this.connect(server)
-    return this.toServerInfo(server)
+    const generation = this.nextGeneration(id)
+    const cancellation = this.cancelConnection(id)
+    return this.enqueue(id, async () => {
+      await cancellation
+      if (this.isCurrent(id, generation)) await this.connect(server, generation)
+      return this.toServerInfo(server)
+    })
   }
 
   getToolDefinitions(): ToolDefinition[] {
@@ -158,10 +185,22 @@ export class McpManager {
   }
 
   async closeAll(): Promise<void> {
-    await Promise.allSettled([...this.connections.keys()].map((id) => this.closeServer(id)))
+    const ids = new Set([
+      ...this.store.load().map((server) => server.id),
+      ...this.connections.keys(),
+      ...this.pendingConnections.keys()
+    ])
+    await Promise.allSettled([...ids].map(async (id) => {
+      this.nextGeneration(id)
+      await this.cancelConnection(id)
+      await this.operationQueues.get(id)
+      const server = this.store.load().find((item) => item.id === id)
+      this.states.set(id, { status: server?.enabled ? 'disconnected' : 'disabled' })
+    }))
   }
 
-  private async connect(server: McpServerConfig): Promise<void> {
+  private async connect(server: McpServerConfig, generation: number): Promise<void> {
+    if (!this.isCurrent(server.id, generation)) return
     this.states.set(server.id, { status: 'connecting' })
     const client = new Client({ name: 'chuangdex', version: '0.1.0' })
     const transport = new StdioClientTransport({
@@ -174,47 +213,91 @@ export class McpManager {
     transport.stderr?.on('data', () => {
       // 主动消费 stderr，避免 Server 大量日志堵塞；不把其中可能含有的敏感内容展示到界面。
     })
+    this.pendingConnections.set(server.id, { generation, client })
 
     client.onerror = (error) => {
+      if (!this.ownsClient(server.id, generation, client) || this.intentionalClose.has(client)) return
       this.states.set(server.id, { status: 'error', error: conciseError(error) })
     }
     client.onclose = () => {
-      this.connections.delete(server.id)
-      if (this.intentionalClose.has(server.id)) return
+      this.deleteClientReferences(server.id, client)
+      if (this.intentionalClose.has(client) || !this.isCurrent(server.id, generation)) return
       this.states.set(server.id, { status: 'disconnected', error: 'MCP Server 连接已关闭' })
     }
 
     try {
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS })
+      if (!this.isCurrent(server.id, generation)) {
+        await this.closeClient(server.id, client)
+        return
+      }
       const tools = await listAllTools(client, server)
+      if (!this.isCurrent(server.id, generation)) {
+        await this.closeClient(server.id, client)
+        return
+      }
+      const pending = this.pendingConnections.get(server.id)
+      if (pending?.client === client) this.pendingConnections.delete(server.id)
       this.connections.set(server.id, { config: server, client, transport, tools })
       this.states.set(server.id, { status: 'connected' })
     } catch (err) {
       const error = conciseError(err)
-      this.intentionalClose.add(server.id)
-      try {
-        await client.close()
-      } catch {
-        // 连接失败后的清理错误不覆盖原始状态。
-      } finally {
-        this.intentionalClose.delete(server.id)
+      await this.closeClient(server.id, client)
+      if (this.isCurrent(server.id, generation)) {
+        this.states.set(server.id, { status: 'error', error })
       }
-      this.states.set(server.id, { status: 'error', error })
     }
   }
 
-  private async closeServer(id: string): Promise<void> {
+  private nextGeneration(id: string): number {
+    const generation = (this.generations.get(id) ?? 0) + 1
+    this.generations.set(id, generation)
+    return generation
+  }
+
+  private isCurrent(id: string, generation: number): boolean {
+    return this.generations.get(id) === generation
+  }
+
+  private ownsClient(id: string, generation: number, client: Client): boolean {
+    const pending = this.pendingConnections.get(id)
+    if (pending?.client === client && pending.generation === generation) return true
+    return this.connections.get(id)?.client === client && this.isCurrent(id, generation)
+  }
+
+  private deleteClientReferences(id: string, client: Client): void {
+    if (this.pendingConnections.get(id)?.client === client) this.pendingConnections.delete(id)
+    if (this.connections.get(id)?.client === client) this.connections.delete(id)
+  }
+
+  private async cancelConnection(id: string): Promise<void> {
+    const clients = new Set<Client>()
+    const pending = this.pendingConnections.get(id)
+    if (pending) clients.add(pending.client)
     const connection = this.connections.get(id)
-    if (!connection) return
-    this.intentionalClose.add(id)
-    this.connections.delete(id)
+    if (connection) clients.add(connection.client)
+    await Promise.allSettled([...clients].map((client) => this.closeClient(id, client)))
+  }
+
+  private async closeClient(id: string, client: Client): Promise<void> {
+    this.intentionalClose.add(client)
+    this.deleteClientReferences(id, client)
     try {
-      await connection.client.close()
-    } finally {
-      this.intentionalClose.delete(id)
-      const server = this.store.load().find((item) => item.id === id)
-      this.states.set(id, { status: server?.enabled ? 'disconnected' : 'disabled' })
+      await client.close()
+    } catch {
+      // 连接关闭失败不应阻塞后续的删除、更新或重连。
     }
+  }
+
+  private enqueue<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationQueues.get(id) ?? Promise.resolve()
+    const result = previous.catch(() => undefined).then(operation)
+    const tracked = result.then(() => undefined, () => undefined)
+    this.operationQueues.set(id, tracked)
+    void tracked.then(() => {
+      if (this.operationQueues.get(id) === tracked) this.operationQueues.delete(id)
+    })
+    return result
   }
 
   private toServerInfo(server: McpServerConfig): McpServerInfo {

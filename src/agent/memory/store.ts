@@ -30,12 +30,10 @@ export class MemoryStore {
       const raw = readFileSync(this.filePath, 'utf-8')
       const data = JSON.parse(raw) as unknown
       if (Array.isArray(data)) {
-        return data.filter(
-          (item): item is MemoryItem =>
-            item &&
-            typeof (item as MemoryItem).id === 'string' &&
-            typeof (item as MemoryItem).content === 'string'
-        )
+        return data.flatMap((item) => {
+          const memory = normalizeStoredMemory(item)
+          return memory ? [memory] : []
+        }).slice(-MAX_MEMORIES)
       }
     } catch {
       // 文件损坏时返回空数组
@@ -96,6 +94,22 @@ export class MemoryStore {
     this.save(memories)
     return { ok: true, item }
   }
+}
+
+function normalizeStoredMemory(value: unknown): MemoryItem | null {
+  if (!value || typeof value !== 'object') return null
+  const item = value as Record<string, unknown>
+  if (typeof item.id !== 'string' || !item.id.trim() || typeof item.content !== 'string') return null
+
+  const content = Array.from(item.content.trim()).slice(0, MAX_MEMORY_CHARS).join('')
+  if (!content) return null
+  const createdAt = typeof item.createdAt === 'number' && Number.isFinite(item.createdAt)
+    ? item.createdAt
+    : 0
+  const updatedAt = typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)
+    ? item.updatedAt
+    : createdAt
+  return { id: item.id, content, createdAt, updatedAt }
 }
 
 function normalize(content: string): string {
