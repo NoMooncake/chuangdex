@@ -1,148 +1,159 @@
 # ChuangDex
 
-我们自己的 Agent 桌面客户端 + 飞书机器人。当前进度：可观察的 Agent 工作台（时间线 + 折叠执行卡片 + 可收起执行侧栏）+ Agent 内核 + Kimi + Skills + 会话管理 + 持久化 + 多轮对话 + 飞书渠道 + 飞书定时任务。
+ChuangDex 是一个本地优先、可观察、可扩展的 Agent 桌面客户端，同时可作为飞书机器人运行。它把对话、Skills、长期记忆、受控命令执行、MCP 工具和定时任务整合在同一个 Electron 应用中，并把 Agent 每一步的执行过程实时展示出来。
 
-## 配置 Kimi（必填）
+## 核心能力
+
+- **Agent 工作台**：多会话管理、多轮上下文、Markdown 消息、自动命名、深浅主题和本地持久化。
+- **可观察执行**：对话中的每轮任务都有执行摘要和可折叠记录，右侧栏实时展示步骤、状态和耗时。
+- **自定义模型**：通过 API Key、Endpoint 和模型名接入你自己的 OpenAI-compatible 模型服务，Agent 内核与具体厂商接口解耦。
+- **Skills**：自动发现内置与用户 Skill，由 Agent 根据当前请求选择是否使用；也可从用户明确提供的公开 GitHub 链接安装完整 Skill 目录。
+- **长期记忆**：Agent 可在桌面会话中新增、修改、回忆或删除原子记忆，并提供独立的记忆管理页。
+- **受控命令执行**：Agent 可提议在独立工作目录执行非交互式命令，但必须先展示完整命令并等待用户确认。
+- **MCP**：在桌面端管理本地 stdio MCP Server，查看连接状态和工具列表；每次工具调用均需用户确认。
+- **飞书渠道**：可选的私聊/群聊机器人与周期定时任务，任务到点后自动唤醒 Agent 并回复到原会话。
+
+## 快速开始
+
+需要本机已安装 Node.js 和 npm。
 
 ```bash
+git clone https://github.com/NoMooncake/chuangdex.git
+cd chuangdex
+npm install
 cp config/models.example.json config/models.local.json
-# 编辑 models.local.json，填入你的 API Key、Endpoint 和模型名
+npm run dev
 ```
 
-`config/models.local.json` 已被 .gitignore 忽略，不会提交。未配置时发消息会在右侧看到「准备调用模型 → 失败」记录和提示。
+启动前编辑 `config/models.local.json`，填入你的 API Key、Endpoint 和模型名。当前 Provider 使用 OpenAI-compatible `/chat/completions` 协议；如果需要 Skills 安装、命令或 MCP 等工具能力，模型还需支持 `tool_calls`。
 
-## 配置飞书机器人（可选）
+`config/models.local.json` 已被 Git 忽略，不会提交到仓库。未配置模型时，应用仍可启动和查看本地数据，发送消息时会给出配置提示。
+
+> 如果 Electron 二进制下载缓慢，可使用：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install`
+
+## 桌面端使用
+
+### Skills
+
+每个 Skill 是一个包含 `SKILL.md` 的目录。应用启动时会同时加载：
+
+- 仓库 `skills/` 中的内置 Skills。
+- Electron `userData/skills/` 中的用户 Skills。
+
+Agent 会结合用户请求和当前会话判断是否选用 Skill，未匹配时按普通对话处理。当用户明确要求安装其提供的公开 GitHub Skill 链接时，ChuangDex 会下载、校验并原子写入完整 Skill 目录，不会自动执行仓库中的脚本或安装步骤。
+
+### 长期记忆
+
+长期记忆只在桌面会话中使用，不会注入飞书对话或定时任务。Agent 根据对话判断是否需要保存或更新记忆，用户也可在「记忆」页查看和删除。记忆最多保留 50 条，单条最多 500 个字符。
+
+### 命令执行
+
+命令工具只在桌面会话中开放，并且：
+
+- 执行前必须由用户明确确认。
+- 固定从系统「文稿/Documents」目录下的 `ChuangDex Workspace` 运行，不直接使用应用源码或配置目录。
+- 不继承 API Key 等应用环境变量，并拦截凭据读取、完整环境变量输出和高风险破坏命令。
+- 输出大小和执行时间均有上限，超限会截断或终止。
+
+### MCP
+
+「MCP」页可新增、编辑、启用、重连和删除本地 stdio Server，并展示实时状态与已发现的工具。当前版本不支持远程 MCP 传输或自定义 Server 环境变量。
+
+MCP Server 是在本机运行的程序，只应添加信任的 Server。Agent 发起工具调用后会先展示 Server、工具名和参数，用户确认后才会真正调用。
+
+## 飞书机器人（可选）
 
 ```bash
 cp config/feishu.example.json config/feishu.local.json
-# 编辑 feishu.local.json，填入飞书应用的 App ID 和 App Secret
+# 编辑 feishu.local.json，填入 App ID 和 App Secret
 ```
 
-飞书开发者后台（open.feishu.cn）最少手动配置：
+在飞书开发者后台完成以下配置：
 
-1. 创建「企业自建应用」，添加应用能力：**机器人**
-2. 权限：添加 `im:message`（发送与接收消息；若后台提供细化权限，选 `im:message.p2p_msg` 私聊接收 + `im:message.group_msg` 群聊接收 + `im:message` 发送）
-3. 事件订阅：订阅方式选「**使用长连接接收事件**」，添加事件「接收消息 im.message.receive_v1」
-4. 创建版本并发布（企业自建应用一般管理员直接通过），然后私聊机器人或把它拉进群
+1. 创建「企业自建应用」并添加机器人能力。
+2. 添加发送与接收消息所需权限；如后台提供细分权限，选择私聊接收、群聊接收和消息发送。
+3. 事件订阅选择「使用长连接收事件」，订阅 `im.message.receive_v1`。
+4. 创建版本并发布应用，然后私聊机器人或将其加入群聊。
 
-配置后重启 `npm run dev`，日志出现「飞书机器人已启动（长连接模式）」即可在飞书里对话。
+重启应用后，终端出现「飞书机器人已启动（长连接模式）」即表示连接成功。
 
-## 飞书定时任务
+### 飞书定时任务
 
-在飞书里直接说，例如「每个工作日早上 9 点，把今天日报发到这个群」：
+在飞书会话中直接说，例如：「每个工作日早上 9 点，把今天日报发到这个群」。
 
-- Kimi 解析意图（时间 HH:MM + 每天/每个工作日 + 任务内容），信息不全则反问补充
-- 任务持久化在 userData 目录 `scheduled-tasks.json`，重启自动恢复
-- 到点唤醒 Agent 服务执行（定时任务模式：模型被告知“任务已创建、现在到点”，只生成此刻应发的内容；Skills 照常生效）
-- “先推进后执行”：同一时间的任务绝不重复回复；终端可见创建/执行/下次时间日志
+- Agent 会解析时间、重复方式和任务内容，信息不全时会追问。
+- 任务持久化后可在桌面端「已安排」页继续新增、修改或删除。
+- 到点后会生成当次应发送的内容并回复到创建任务的飞书会话。
+- 调度器会先推进下次执行时间再执行当次任务，避免同一时间重复回复。
 
-## 消息链路
+## 数据与安全边界
 
+- 模型和飞书密钥只从本机 `config/*.local.json` 读取，不经过 renderer，也不写入会话存档。
+- 会话、定时任务、长期记忆、MCP 配置和用户 Skills 都保存在 Electron `userData` 目录。
+- renderer 只能通过 `contextBridge` 暴露的最小 IPC 接口访问主进程能力。
+- 命令执行和 MCP 工具调用都需要用户确认，敏感参数和高风险命令会被额外拦截。
+- 飞书渠道不使用桌面端的私人长期记忆、命令执行或 MCP 工具。
+
+## 架构
+
+```text
+React 桌面界面 / 飞书渠道
+              │
+              ▼
+     ChuangdexAgentService
+       │      │      │
+       │      │      └─ Skills / 记忆
+       │      └─ 命令 / MCP 工具
+       └─ ModelProvider
+              │
+              ▼
+       自定义兼容模型服务
 ```
-React 对话区
-  │  window.chuangdex.agent.sendMessage()   （preload 安全桥，contextBridge）
-  ▼
-Electron 主进程  ipcMain.handle('agent:send-message')
-  │  交给
-  ▼
-ChuangdexAgentService  src/agent/service.ts   ← Agent 内核入口
-  │  ① 发现 Skills（启动时扫描 skills/ 目录）
-  │  ② 选择 Skill（触发关键词匹配，由服务决定，界面不参与）
-  │  ③ 命中时把 Skill 工作说明注入系统提示词
-  │  ④ 调用 ModelProvider 接口（当前实现：src/agent/providers/kimi.ts）
-  │  处理中逐条发射运行记录 → webContents.send('agent:run-event') → 右侧面板实时显示
-  │  最终回复作为 invoke 的返回值 → 对话区显示
-  ▼
-界面
-```
 
-接入其他模型厂商时：在 `src/agent/providers/` 下新增一个实现 `ModelProvider` 接口的类，并在主进程 `setupAgent()` 中装配。
+`ChuangdexAgentService` 是与 Electron 界面解耦的内核入口，只依赖 `ModelProvider` 抽象。要添加新的模型协议，可在 `src/agent/providers/` 实现新 Provider，再在主进程装配，无需改动 Agent 服务或 renderer。
 
-## Skills
-
-Skill 不是模型，而是一套可复用的工作方法。每个 Skill 是 `skills/` 下的一个目录，内含 `SKILL.md`：
-
-- frontmatter：`name`（名称）、`description`（用途）、`triggers`（触发关键词）
-- 正文：工作说明，命中时注入系统提示词，指导模型完成这类任务
-
-新增 Skill：只需新建 `skills/<名称>/SKILL.md`，重启即被自动发现，无需改代码。
-
-## 会话管理
-
-- 左栏「＋」新建空会话并立即切换；默认名“新对话”，重名自动加数字
-- 悬停会话出现「×」删除入口，弹窗确认后删除
-- 删除当前会话后自动切到相邻会话；删光后自动新建空会话
-- 对话区标题旁「✎」手动重命名；手动标题永不被自动命名覆盖（renamed 标记）
-- 新会话发出第一条消息后，Agent 服务独立调用 Kimi 自动生成标题；失败则保留“新对话”，不影响对话
-- 会话数据持久化在 userData 目录（macOS `~/Library/Application Support/chuangdex/sessions.json`，Windows `%APPDATA%/chuangdex/sessions.json`），重启自动恢复上次会话与激活项
-- 存档缺失或损坏时安全回退到演示会话；存档不含 API Key 等任何模型配置
-- 多轮对话：发送时带上当前会话最近 12 条历史消息（仅角色+内容），按时间顺序发给模型；不同会话的上下文互相隔离
-
-## 技术栈
-
-- Electron 33（跨 macOS / Windows）
-- React 18 + TypeScript
-- electron-vite（开发热更新 + 构建）
-
-## 启动
+## 开发与验证
 
 ```bash
-cd chuangdex
-npm install        # 首次
-npm run dev        # 开发模式（推荐，带热更新）
+npm run dev          # 开发模式，支持热更新
+npm run typecheck    # TypeScript 类型检查
+npm run test:mcp     # MCP 连接与 Agent 调用 smoke test
+npm run test:review  # MCP 生命周期与记忆边界回归测试
+npm run build        # 生成生产构建到 out/
+npm start            # 预览已生成的构建
 ```
-
-其他命令：
-
-```bash
-npm run build      # 构建到 out/
-npm start          # 预览构建产物
-npm run typecheck  # TypeScript 类型检查
-```
-
-> 如果 Electron 二进制下载缓慢：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install`
 
 ## 目录结构
 
-```
+```text
 config/
-  models.example.json  # Kimi 配置示例（不含真实密钥）
-  models.local.json    # 你的 Kimi 配置（Git 忽略，需自己创建）
-  feishu.example.json  # 飞书机器人配置示例（不含真实密钥）
-  feishu.local.json    # 你的飞书配置（Git 忽略，需自己创建）
+  models.example.json       # 模型服务配置示例
+  feishu.example.json       # 飞书机器人配置示例
 skills/
-  daily-briefing/
-    SKILL.md           # 第一个 Skill：结构化日报/简报
+  daily-briefing/SKILL.md   # 内置 Skill 示例
+examples/mcp/
+  echo-server.mjs           # 本地 MCP 演示 Server
 src/
-  agent/service.ts     # ★ Agent 内核入口（与 Electron 解耦）
-  agent/providers/
-    types.ts           # ModelProvider 接口（厂商抽象层）
-    kimi.ts            # Kimi（Moonshot）实现
-  agent/skills/
-    types.ts           # Skill 的最小组成
-    loader.ts          # Skill 发现（扫描 skills/ 目录）
-    matcher.ts         # Skill 选择（触发关键词匹配）
-  channels/
-    feishu-channel.ts  # 飞书渠道层（纯逻辑：过滤/去重/会话隔离；事件立即返回，后台执行）
-    feishu.ts          # 飞书长连接接线（唯一接触飞书 SDK 的地方）
-    scheduler.ts       # 周期定时任务引擎（每天/工作日；先推进后执行，绝不重复回复）
-  shared/agent.ts      # 两端共享的类型与 IPC 通道名
-  main/index.ts        # Electron 主进程：窗口 + IPC + 装配 Skills/模型/飞书
-  main/model-config.ts # Kimi 配置加载器
-  main/feishu-config.ts# 飞书配置加载器
-  main/session-store.ts# 会话持久化（userData/sessions.json）
-  preload/index.ts     # 安全桥（contextBridge）
-  renderer/
-    index.html
-    src/
-      App.tsx          # 三栏布局 + 交互逻辑
-      mock.ts          # 假数据（会话 / 消息 / 运行记录）
-      styles.css       # 深色主题
+  agent/
+    service.ts              # Agent 内核入口
+    providers/              # ModelProvider 抽象与当前 Provider
+    skills/                 # Skill 加载、选择与安装
+    memory/                 # 长期记忆管理与持久化
+    tools/command.ts        # 受控命令执行器
+    mcp/                    # 本地 MCP 配置、连接与工具调用
+  channels/                 # 飞书渠道与定时调度
+  main/                     # Electron 主进程、配置与会话存储
+  preload/                  # contextBridge 安全桥
+  renderer/                 # React 界面
+  shared/agent.ts           # 共享类型与 IPC 通道
+scripts/                    # smoke test 与回归测试
 ```
 
-## 界面
+## 技术栈
 
-- 左栏：会话列表（新建/删除/改名/持久化），处理中的会话有低调的状态点
-- 中栏：时间线对话区；每轮任务的运行记录收进默认折叠的「执行过程」卡片，运行中有克制的动效提示
-- 右栏：可一键收起的「本次执行」侧栏；区块可分别展开/收起；只展示真实数据（进度、步骤、后台记录），没有数据时明确写“暂无”
-- 界面分组只靠一个轻量标记 `turnId`：同一轮的消息与运行记录共享它，自动命名等后台记录不带，自然分开
+- Electron 33
+- React 18
+- TypeScript
+- electron-vite / Vite
+- Model Context Protocol SDK
+- Lark OpenAPI SDK
