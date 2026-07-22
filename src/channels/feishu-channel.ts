@@ -11,7 +11,8 @@
 
 import type { ChuangdexAgentService } from '../agent/service'
 import type { HistoryMessage } from '../shared/agent'
-import { formatTime, repeatLabel, type TaskScheduler } from './scheduler'
+import type { TaskScheduler } from './scheduler'
+import { tryCreateScheduledTask } from './schedule-creation'
 
 /** 飞书消息事件的最小结构（只声明渠道层关心的字段） */
 export interface FeishuMessageEvent {
@@ -99,44 +100,18 @@ export class FeishuBotChannel {
 
       // 先解析是否是定时任务请求
       if (this.scheduler) {
-        const intent = await this.agent.detectSchedule(text, runSink)
-        if (intent?.isSchedule) {
-          if (intent.time && intent.repeat && intent.task) {
-            try {
-              const task = this.scheduler.addTask({
-                chatId,
-                text: intent.task,
-                time: intent.time,
-                repeat: intent.repeat
-              })
-              await this.send(
-                chatId,
-                messageId,
-                [
-                  '✅ 定时任务已创建',
-                  `内容：${task.text}`,
-                  `频率：${repeatLabel(task.repeat)}`,
-                  `时间：${task.time}`,
-                  `下次执行：${formatTime(task.nextRunAt)}`
-                ].join('\n')
-              )
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err)
-              this.log(`[feishu] 定时任务创建失败（消息 ${messageId}）：${reason}`)
-              await this.send(chatId, messageId, '暂时无法保存这个定时任务，因此未创建。请稍后重试。')
-            }
-          } else {
-            await this.send(
-              chatId,
-              messageId,
-              [
-                '听起来你想创建一个定时任务，但信息还不够明确，请补充：',
-                '· 具体时间（几点几分，如 09:00、18:30）',
-                '· 重复方式（每天，或每个工作日）',
-                '例如：“每个工作日 09:00 把今天日报发到这个群。”'
-              ].join('\n')
-            )
+        const schedule = await tryCreateScheduledTask(
+          this.agent,
+          this.scheduler,
+          chatId,
+          text,
+          runSink
+        )
+        if (schedule) {
+          if (schedule.error) {
+            this.log(`[feishu] 定时任务创建失败（消息 ${messageId}）：${schedule.error}`)
           }
+          await this.send(chatId, messageId, schedule.content)
           this.log(`[feishu] 已回复 ${messageId}`)
           return
         }

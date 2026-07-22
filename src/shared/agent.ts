@@ -62,11 +62,26 @@ export interface AgentSendPayload {
   turnId?: string
 }
 
+/** 后台桌面定时任务执行完成后，主进程投递回对应会话的完整结果。 */
+export interface ScheduledAgentDelivery {
+  id: string
+  taskId: string
+  taskText: string
+  sessionId: string
+  turnId: string
+  content: string
+  time: string
+  runs: AgentRunEvent[]
+}
+
 /** IPC 通道名，集中在这一处定义，避免两端写错 */
 export const AGENT_CHANNELS = {
   sendMessage: 'agent:send-message',
   generateTitle: 'agent:generate-title',
-  runEvent: 'agent:run-event'
+  runEvent: 'agent:run-event',
+  scheduledDelivery: 'agent:scheduled-delivery',
+  scheduledReady: 'agent:scheduled-ready',
+  scheduledAck: 'agent:scheduled-ack'
 } as const
 
 /** Skill 的桌面展示信息（不含工作说明正文） */
@@ -76,6 +91,7 @@ export interface SkillInfo {
 }
 
 export type TaskRepeatMode = 'daily' | 'weekdays'
+export type TaskChannel = 'desktop' | 'feishu'
 
 /** 定时任务的桌面展示信息。chatId 仅用于在界面内选择已有投递会话，不直接展示。 */
 export interface TaskInfo {
@@ -85,11 +101,13 @@ export interface TaskInfo {
   time: string
   nextRunAt: string
   chatId: string
+  channel: TaskChannel
 }
 
 /** 从桌面端新建定时任务时提交的最小信息。 */
 export interface TaskCreateInput {
   chatId: string
+  channel: TaskChannel
   text: string
   time: string
   repeat: TaskRepeatMode
@@ -98,9 +116,15 @@ export interface TaskCreateInput {
 /** 桌面端可编辑的任务字段；投递会话保持不变。 */
 export interface TaskUpdateInput {
   id: string
+  channel: TaskChannel
   text: string
   time: string
   repeat: TaskRepeatMode
+}
+
+export interface TaskRemoveInput {
+  id: string
+  channel: TaskChannel
 }
 
 export const SKILL_CHANNELS = {

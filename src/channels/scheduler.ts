@@ -14,7 +14,7 @@ export type RepeatMode = 'daily' | 'weekdays'
 
 export interface ScheduledTask {
   id: string
-  /** 飞书会话 ID：执行结果回复到创建任务的那个会话 */
+  /** 渠道内的目标会话 ID：执行结果回复到创建任务的那个会话 */
   chatId: string
   /** 用户当初交代的任务内容 */
   text: string

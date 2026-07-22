@@ -10,8 +10,13 @@ import { McpManager } from '../agent/mcp/manager'
 import { McpServerStore } from '../agent/mcp/store'
 import { TaskScheduler, TaskStore, type ScheduledTask, formatTime } from '../channels/scheduler'
 import {
+  executeDesktopScheduledTask,
+  tryCreateScheduledTask
+} from '../channels/schedule-creation'
+import {
   AGENT_CHANNELS,
   AgentSendPayload,
+  AgentRunEvent,
   APP_OPEN_EXTERNAL,
   APP_SET_THEME,
   AppTheme,
@@ -23,14 +28,18 @@ import {
   TASK_CHANNELS,
   SESSION_CHANNELS,
   SessionsSavePayload,
+  ScheduledAgentDelivery,
+  TaskChannel,
   TaskCreateInput,
   TaskInfo,
+  TaskRemoveInput,
   TaskUpdateInput
 } from '../shared/agent'
 import { loadKimiConfig, modelsConfigPath } from './model-config'
 import { feishuConfigPath, loadFeishuConfig } from './feishu-config'
 import { startFeishuBot } from '../channels/feishu'
 import { loadPersistedSessions, scheduleSaveSessions, sessionsFilePath } from './session-store'
+import { DesktopDeliveryStore } from './desktop-delivery-store'
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -41,9 +50,11 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 // ChuangDex Agent 内核：本地模块常驻主进程，启动时装配模型 provider
 let agentService: ChuangdexAgentService
 
-// 飞书渠道启动后持有的唯一调度器。桌面端的管理操作必须经过它，
-// 才能立即同步到内存中的巡检任务，而不是只改写 JSON 文件。
-let taskScheduler: TaskScheduler | null = null
+// 两个渠道复用同一个 TaskScheduler 实现，但使用独立存储和投递目标。
+let feishuTaskScheduler: TaskScheduler | null = null
+let desktopTaskScheduler: TaskScheduler | null = null
+let desktopDeliveryStore: DesktopDeliveryStore | null = null
+const readyScheduledRenderers = new Set<number>()
 
 /** 长期记忆存储：本机用户数据目录，与 Agent 服务共享同一实例 */
 let memoryStore: MemoryStore | null = null
@@ -123,11 +134,47 @@ function registerAgentIpc(): void {
   // 渲染进程通过 ipcRenderer.invoke 调用；处理过程中的每条运行记录
   // 都通过 webContents.send 实时推回对应的渲染进程。
   ipcMain.handle(AGENT_CHANNELS.sendMessage, async (event, payload: AgentSendPayload) => {
-    return agentService.handleMessage({ ...payload, source: 'desktop' }, (run) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(AGENT_CHANNELS.runEvent, run)
+    const emit = (run: AgentRunEvent): void => {
+      const contextualRun: AgentRunEvent = {
+        ...run,
+        sessionId: payload.sessionId,
+        ...(payload.turnId ? { turnId: payload.turnId } : {})
       }
-    })
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(AGENT_CHANNELS.runEvent, contextualRun)
+      }
+    }
+
+    // “确认执行/确认调用”是已有工具的确定性控制消息，不能先交给定时意图模型。
+    if (!/^(?:确认执行|取消执行|确认调用|取消调用)$/i.test(payload.text.trim())) {
+      const schedule = await tryCreateScheduledTask(
+        agentService,
+        currentDesktopTaskScheduler(),
+        payload.sessionId,
+        payload.text,
+        emit
+      )
+      if (schedule) {
+        emit({
+          id: `run-schedule-${Date.now()}`,
+          sessionId: payload.sessionId,
+          title: schedule.task
+            ? '定时任务已创建'
+            : schedule.error
+              ? '定时任务创建失败'
+              : '定时任务信息不完整',
+          detail: schedule.task
+            ? `${schedule.task.time} · ${schedule.task.repeat} · ${schedule.task.text}`
+            : schedule.error ?? '等待用户补充时间、频率或任务内容',
+          status: schedule.error ? 'failed' : 'success',
+          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          ts: Date.now()
+        })
+        return { sessionId: payload.sessionId, content: schedule.content }
+      }
+    }
+
+    return agentService.handleMessage({ ...payload, source: 'desktop' }, emit)
   })
 
   // 自动命名：与聊天回复完全独立的第二次模型调用，运行记录走同一通道回流
@@ -154,6 +201,16 @@ function registerAgentIpc(): void {
     scheduleSaveSessions(payload)
   })
 
+  ipcMain.handle(AGENT_CHANNELS.scheduledReady, (event) => {
+    readyScheduledRenderers.add(event.sender.id)
+    event.sender.once('destroyed', () => readyScheduledRenderers.delete(event.sender.id))
+    flushDesktopDeliveries(event.sender)
+  })
+
+  ipcMain.handle(AGENT_CHANNELS.scheduledAck, (_event, id: string) => {
+    if (typeof id === 'string' && id) desktopDeliveryStore?.remove(id)
+  })
+
   // 渲染进程点击 Markdown 链接时，由主进程使用系统浏览器打开
   ipcMain.handle(APP_OPEN_EXTERNAL, async (_event, url: string) => {
     await shell.openExternal(url)
@@ -169,26 +226,97 @@ function registerAgentIpc(): void {
   })
 }
 
-function scheduledTasksPath(): string {
+function feishuScheduledTasksPath(): string {
   return join(app.getPath('userData'), 'scheduled-tasks.json')
 }
 
-function toTaskInfo(task: ScheduledTask): TaskInfo {
+function desktopScheduledTasksPath(): string {
+  return join(app.getPath('userData'), 'desktop-scheduled-tasks.json')
+}
+
+function desktopDeliveriesPath(): string {
+  return join(app.getPath('userData'), 'desktop-scheduled-deliveries.json')
+}
+
+function toTaskInfo(task: ScheduledTask, channel: TaskChannel): TaskInfo {
   return {
     id: task.id,
     text: task.text,
     repeat: task.repeat,
     time: task.time,
     nextRunAt: formatTime(task.nextRunAt),
-    chatId: task.chatId
+    chatId: task.chatId,
+    channel
   }
 }
 
-function currentTaskScheduler(): TaskScheduler {
-  if (!taskScheduler) {
-    throw new Error('飞书机器人尚未启动，无法修改已安排任务')
+function currentDesktopTaskScheduler(): TaskScheduler {
+  if (!desktopTaskScheduler) throw new Error('桌面定时任务调度器尚未启动')
+  return desktopTaskScheduler
+}
+
+function schedulerForChannel(channel: TaskChannel): TaskScheduler {
+  if (channel === 'desktop') return currentDesktopTaskScheduler()
+  if (!feishuTaskScheduler) throw new Error('飞书机器人尚未启动，无法修改飞书任务')
+  return feishuTaskScheduler
+}
+
+function flushDesktopDeliveries(target?: Electron.WebContents): void {
+  if (!desktopDeliveryStore) return
+  const deliveries = desktopDeliveryStore.load()
+  if (deliveries.length === 0) return
+  const targets = target
+    ? [target]
+    : BrowserWindow.getAllWindows()
+        .map((window) => window.webContents)
+        .filter(
+          (webContents) =>
+            !webContents.isDestroyed() && readyScheduledRenderers.has(webContents.id)
+        )
+  for (const webContents of targets) {
+    if (webContents.isDestroyed() || !readyScheduledRenderers.has(webContents.id)) continue
+    for (const delivery of deliveries) {
+      webContents.send(AGENT_CHANNELS.scheduledDelivery, delivery)
+    }
   }
-  return taskScheduler
+}
+
+function setupDesktopTaskScheduler(): void {
+  desktopDeliveryStore = new DesktopDeliveryStore(desktopDeliveriesPath())
+  desktopTaskScheduler = new TaskScheduler(
+    new TaskStore(desktopScheduledTasksPath()),
+    async (task) => {
+      const firedAt = task.lastRunAt ?? Date.now()
+      const turnId = `scheduled-${task.id}-${firedAt}`
+      const runs: AgentRunEvent[] = []
+      const reply = await executeDesktopScheduledTask(
+        agentService,
+        task,
+        turnId,
+        (run) => runs.push(run)
+      )
+      const delivery: ScheduledAgentDelivery = {
+        id: `scheduled-delivery-${task.id}-${firedAt}`,
+        taskId: task.id,
+        taskText: task.text,
+        sessionId: task.chatId,
+        turnId,
+        content: reply.content,
+        time: new Date().toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        }),
+        runs
+      }
+      if (!desktopDeliveryStore?.add(delivery)) {
+        throw new Error('桌面任务已执行，但结果无法写入待投递队列')
+      }
+      flushDesktopDeliveries()
+    },
+    (line) => console.log(`[desktop-scheduler] ${line}`)
+  )
+  desktopTaskScheduler.start()
 }
 
 function currentMcpManager(): McpManager {
@@ -250,10 +378,14 @@ function setupDataBridge(): void {
 
   ipcMain.handle(TASK_CHANNELS.load, () => {
     try {
-      const tasks = taskScheduler
-        ? taskScheduler.listTasks()
-        : new TaskStore(scheduledTasksPath()).load()
-      return tasks.map(toTaskInfo)
+      const desktopTasks = desktopTaskScheduler?.listTasks() ?? []
+      const feishuTasks = feishuTaskScheduler
+        ? feishuTaskScheduler.listTasks()
+        : new TaskStore(feishuScheduledTasksPath()).load()
+      return [
+        ...desktopTasks.map((task) => toTaskInfo(task, 'desktop')),
+        ...feishuTasks.map((task) => toTaskInfo(task, 'feishu'))
+      ]
     } catch (err) {
       console.warn('[chuangdex] 加载定时任务失败：', err)
       return []
@@ -261,20 +393,23 @@ function setupDataBridge(): void {
   })
 
   ipcMain.handle(TASK_CHANNELS.create, (_event, input: TaskCreateInput) => {
-    const scheduler = currentTaskScheduler()
+    const scheduler = schedulerForChannel(input.channel)
     const knownChatIds = new Set(scheduler.listTasks().map((task) => task.chatId))
     if (!knownChatIds.has(input?.chatId)) {
-      throw new Error('请从已有任务的飞书会话中选择投递位置')
+      throw new Error('请选择一个已有任务的投递会话')
     }
-    return toTaskInfo(scheduler.addTask(input))
+    return toTaskInfo(scheduler.addTask(input), input.channel)
   })
 
   ipcMain.handle(TASK_CHANNELS.update, (_event, input: TaskUpdateInput) => {
-    return toTaskInfo(currentTaskScheduler().updateTask(input.id, input))
+    return toTaskInfo(
+      schedulerForChannel(input.channel).updateTask(input.id, input),
+      input.channel
+    )
   })
 
-  ipcMain.handle(TASK_CHANNELS.remove, (_event, id: string) => {
-    currentTaskScheduler().removeTask(id)
+  ipcMain.handle(TASK_CHANNELS.remove, (_event, input: TaskRemoveInput) => {
+    schedulerForChannel(input.channel).removeTask(input.id)
   })
 }
 
@@ -289,7 +424,7 @@ function setupFeishu(): void {
     return
   }
   try {
-    taskScheduler = startFeishuBot(config, agentService, scheduledTasksPath())
+    feishuTaskScheduler = startFeishuBot(config, agentService, feishuScheduledTasksPath())
     console.log('[chuangdex] 飞书机器人已启动（长连接模式），等待消息…')
   } catch (err) {
     console.error('[chuangdex] 飞书机器人启动失败（不影响桌面端）：', err)
@@ -344,6 +479,7 @@ if (!hasSingleInstanceLock) {
     setupAgent()
     registerAgentIpc()
     setupFeishu()
+    setupDesktopTaskScheduler()
     createWindow()
 
     app.on('activate', () => {
@@ -358,6 +494,8 @@ if (!hasSingleInstanceLock) {
   })
 
   app.on('before-quit', () => {
+    desktopTaskScheduler?.stop()
+    feishuTaskScheduler?.stop()
     void mcpManager?.closeAll()
   })
 }

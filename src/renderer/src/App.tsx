@@ -7,8 +7,10 @@ import type {
   McpServerUpdateInput,
   MemoryItem,
   SkillInfo,
+  TaskChannel,
   TaskCreateInput,
   TaskInfo,
+  TaskRemoveInput,
   TaskRepeatMode,
   TaskUpdateInput
 } from '../../shared/agent'
@@ -565,13 +567,28 @@ function taskRepeatLabel(repeat: TaskRepeatMode): string {
   return repeat === 'daily' ? '每天' : '每个工作日'
 }
 
-function taskDestinations(tasks: TaskInfo[]): string[] {
-  return [...new Set(tasks.map((task) => task.chatId))]
+interface TaskDestination {
+  key: string
+  chatId: string
+  channel: TaskChannel
+}
+
+function taskDestinations(tasks: TaskInfo[]): TaskDestination[] {
+  const destinations = new Map<string, TaskDestination>()
+  for (const task of tasks) {
+    const key = `${task.channel}:${task.chatId}`
+    destinations.set(key, { key, chatId: task.chatId, channel: task.channel })
+  }
+  return [...destinations.values()]
+}
+
+function taskChannelLabel(channel: TaskChannel): string {
+  return channel === 'desktop' ? '桌面会话' : '飞书会话'
 }
 
 function TaskEditor(props: {
   task?: TaskInfo
-  destinations: string[]
+  destinations: TaskDestination[]
   onCreate: (input: TaskCreateInput) => Promise<void>
   onUpdate: (input: TaskUpdateInput) => Promise<void>
   onCancel: () => void
@@ -579,7 +596,10 @@ function TaskEditor(props: {
   const [text, setText] = useState(props.task?.text ?? '')
   const [time, setTime] = useState(props.task?.time ?? '09:00')
   const [repeat, setRepeat] = useState<TaskRepeatMode>(props.task?.repeat ?? 'daily')
-  const [chatId, setChatId] = useState(props.task?.chatId ?? props.destinations[0] ?? '')
+  const defaultDestination = props.task
+    ? `${props.task.channel}:${props.task.chatId}`
+    : props.destinations[0]?.key ?? ''
+  const [destinationKey, setDestinationKey] = useState(defaultDestination)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isEditing = Boolean(props.task)
@@ -594,8 +614,9 @@ function TaskEditor(props: {
       setError('请选择执行时间。')
       return
     }
-    if (!chatId) {
-      setError('请先选择一个已有的飞书会话。')
+    const destination = props.destinations.find((item) => item.key === destinationKey)
+    if (!props.task && !destination) {
+      setError('请先选择一个已有的投递会话。')
       return
     }
 
@@ -603,9 +624,21 @@ function TaskEditor(props: {
     setSaving(true)
     try {
       if (props.task) {
-        await props.onUpdate({ id: props.task.id, text: trimmedText, time, repeat })
-      } else {
-        await props.onCreate({ chatId, text: trimmedText, time, repeat })
+        await props.onUpdate({
+          id: props.task.id,
+          channel: props.task.channel,
+          text: trimmedText,
+          time,
+          repeat
+        })
+      } else if (destination) {
+        await props.onCreate({
+          chatId: destination.chatId,
+          channel: destination.channel,
+          text: trimmedText,
+          time,
+          repeat
+        })
       }
       props.onCancel()
     } catch (err) {
@@ -649,16 +682,22 @@ function TaskEditor(props: {
       </div>
 
       {isEditing ? (
-        <div className="task-target-note">将继续发送到原来的飞书会话。</div>
+        <div className="task-target-note">
+          将继续发送到原来的{taskChannelLabel(props.task?.channel ?? 'desktop')}。
+        </div>
       ) : (
         <label className="task-field">
           <span>发送到</span>
           {props.destinations.length === 1 ? (
-            <div className="task-target-note">已有飞书会话</div>
+            <div className="task-target-note">
+              {taskChannelLabel(props.destinations[0].channel)}
+            </div>
           ) : (
-            <select value={chatId} onChange={(event) => setChatId(event.target.value)}>
+            <select value={destinationKey} onChange={(event) => setDestinationKey(event.target.value)}>
               {props.destinations.map((destination, index) => (
-                <option key={destination} value={destination}>已有飞书会话 {index + 1}</option>
+                <option key={destination.key} value={destination.key}>
+                  {taskChannelLabel(destination.channel)} {index + 1}
+                </option>
               ))}
             </select>
           )}
@@ -680,7 +719,7 @@ function ScheduledView(props: {
   tasks: TaskInfo[]
   onCreate: (input: TaskCreateInput) => Promise<void>
   onUpdate: (input: TaskUpdateInput) => Promise<void>
-  onRemove: (id: string) => Promise<void>
+  onRemove: (input: TaskRemoveInput) => Promise<void>
 }): JSX.Element {
   const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit'; task: TaskInfo } | null>(null)
   const [pendingRemove, setPendingRemove] = useState<string | null>(null)
@@ -689,11 +728,11 @@ function ScheduledView(props: {
   const destinations = useMemo(() => taskDestinations(props.tasks), [props.tasks])
   const canCreate = destinations.length > 0
 
-  const removeTask = async (id: string): Promise<void> => {
+  const removeTask = async (task: TaskInfo): Promise<void> => {
     setActionError(null)
-    setRemovingId(id)
+    setRemovingId(task.id)
     try {
-      await props.onRemove(id)
+      await props.onRemove({ id: task.id, channel: task.channel })
       setPendingRemove(null)
       setEditor(null)
     } catch (err) {
@@ -709,7 +748,7 @@ function ScheduledView(props: {
         <span className="chat-title">已安排</span>
         <button
           className="btn small primary"
-          title={canCreate ? '新增定时任务' : '请先在飞书创建一个任务以确定发送会话'}
+          title={canCreate ? '新增定时任务' : '请先从聊天框创建一个任务以确定投递会话'}
           disabled={!canCreate}
           onClick={() => {
             setActionError(null)
@@ -734,7 +773,7 @@ function ScheduledView(props: {
 
         {!canCreate && (
           <div className="task-source-note">
-            现有定时任务会回复到创建它的飞书会话。请先从飞书创建一次任务，桌面端就可以继续新增和管理同一会话的任务。
+            请先在桌面聊天框或飞书中用自然语言创建一次任务，之后可在这里继续新增和管理。
           </div>
         )}
 
@@ -749,7 +788,7 @@ function ScheduledView(props: {
                 <div>
                   <div className="data-title">{task.text}</div>
                   <div className="data-meta">
-                    {taskRepeatLabel(task.repeat)} · {task.time} · 下次 {task.nextRunAt}
+                    {taskChannelLabel(task.channel)} · {taskRepeatLabel(task.repeat)} · {task.time} · 下次 {task.nextRunAt}
                   </div>
                 </div>
                 <div className="data-actions">
@@ -786,7 +825,7 @@ function ScheduledView(props: {
                     <button
                       className="data-action danger"
                       disabled={removingId === task.id}
-                      onClick={() => void removeTask(task.id)}
+                      onClick={() => void removeTask(task)}
                     >
                       {removingId === task.id ? '删除中…' : '确认删除'}
                     </button>
@@ -1217,6 +1256,76 @@ export default function App(): JSX.Element {
     return unsubscribe
   }, [])
 
+  useEffect(() => {
+    return window.chuangdex.agent.onScheduledDelivery((delivery) => {
+      const message: Message = {
+        id: delivery.id,
+        role: 'assistant',
+        content: delivery.content,
+        time: delivery.time,
+        turnId: delivery.turnId
+      }
+      const deliveredRuns: RunRecord[] = delivery.runs.map((run) => ({
+        id: run.id,
+        title: run.title,
+        detail: run.detail,
+        status: run.status,
+        time: run.time,
+        ts: run.ts,
+        turnId: run.turnId
+      }))
+
+      setSessions((previous) => {
+        const target = previous.find((session) => session.id === delivery.sessionId)
+        if (!target) {
+          return [
+            {
+              id: delivery.sessionId,
+              title: '定时任务',
+              preview: delivery.content.slice(0, 30),
+              updatedAt: delivery.time,
+              renamed: true,
+              messages: [message],
+              runs: deliveredRuns
+            },
+            ...previous
+          ]
+        }
+        return previous.map((session) => {
+          if (session.id !== delivery.sessionId) return session
+          const messages = session.messages.some((item) => item.id === delivery.id)
+            ? session.messages
+            : [...session.messages, message]
+          const runs = deliveredRuns.reduce(
+            (items, run) => upsertRun(items, run),
+            session.runs
+          )
+          return {
+            ...session,
+            preview: delivery.content.slice(0, 30),
+            updatedAt: delivery.time,
+            messages,
+            runs
+          }
+        })
+      })
+
+      // 会话保存有 150ms 防抖；稍后确认，确保崩溃时仍可从主进程队列重投。
+      window.setTimeout(() => {
+        window.chuangdex.agent
+          .ackScheduledDelivery(delivery.id)
+          .catch((error) => console.error('确认定时任务结果失败：', error))
+      }, 500)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!loaded) return
+    window.chuangdex.agent
+      .readyForScheduledDeliveries()
+      .catch((error) => console.error('启动定时任务结果投递失败：', error))
+  }, [loaded])
+
   const handleNewChat = (): void => {
     const fresh = makeEmptySession(sessions)
     setSessions((previous) => [fresh, ...previous])
@@ -1271,8 +1380,8 @@ export default function App(): JSX.Element {
     await refreshTasks()
   }
 
-  const handleRemoveTask = async (id: string): Promise<void> => {
-    await window.chuangdex.tasks.remove(id)
+  const handleRemoveTask = async (input: TaskRemoveInput): Promise<void> => {
+    await window.chuangdex.tasks.remove(input)
     await refreshTasks()
   }
 

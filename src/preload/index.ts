@@ -5,6 +5,7 @@ import {
   AgentRunEvent,
   AgentSendPayload,
   AgentTitleReply,
+  ScheduledAgentDelivery,
   APP_OPEN_EXTERNAL,
   APP_SET_THEME,
   AppTheme,
@@ -22,6 +23,7 @@ import {
   TASK_CHANNELS,
   TaskCreateInput,
   TaskInfo,
+  TaskRemoveInput,
   TaskUpdateInput
 } from '../shared/agent'
 
@@ -47,7 +49,22 @@ const api = {
       return () => {
         ipcRenderer.removeListener(AGENT_CHANNELS.runEvent, listener)
       }
-    }
+    },
+
+    /** 订阅后台桌面定时任务的执行结果。 */
+    onScheduledDelivery: (handler: (delivery: ScheduledAgentDelivery) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, delivery: ScheduledAgentDelivery): void =>
+        handler(delivery)
+      ipcRenderer.on(AGENT_CHANNELS.scheduledDelivery, listener)
+      return () => ipcRenderer.removeListener(AGENT_CHANNELS.scheduledDelivery, listener)
+    },
+
+    /** 会话存档恢复完成后通知主进程，可以安全投递后台结果。 */
+    readyForScheduledDeliveries: (): Promise<void> =>
+      ipcRenderer.invoke(AGENT_CHANNELS.scheduledReady),
+
+    ackScheduledDelivery: (id: string): Promise<void> =>
+      ipcRenderer.invoke(AGENT_CHANNELS.scheduledAck, id)
   },
 
   /** 会话持久化：文件读写由主进程负责，界面只提交/领取数据 */
@@ -70,7 +87,8 @@ const api = {
     load: (): Promise<TaskInfo[]> => ipcRenderer.invoke(TASK_CHANNELS.load),
     create: (input: TaskCreateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.create, input),
     update: (input: TaskUpdateInput): Promise<TaskInfo> => ipcRenderer.invoke(TASK_CHANNELS.update, input),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke(TASK_CHANNELS.remove, id)
+    remove: (input: TaskRemoveInput): Promise<void> =>
+      ipcRenderer.invoke(TASK_CHANNELS.remove, input)
   },
 
   /** 外部链接：Markdown 中的链接通过主进程调用系统浏览器打开 */
