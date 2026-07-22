@@ -4,7 +4,7 @@ ChuangDex 是一个本地优先、可观察、可扩展的 Agent 桌面客户端
 
 ## 核心能力
 
-- **Agent 工作台**：多会话管理、多轮上下文、Markdown 消息、自动命名、深浅主题和本地持久化。
+- **Agent 工作台**：多会话管理、滚动短期记忆、Markdown 消息、自动命名、深浅主题和本地持久化。
 - **可观察执行**：对话中的每轮任务都有执行摘要和可折叠记录，右侧栏实时展示步骤、状态和耗时。
 - **自定义模型**：通过 API Key、Endpoint 和模型名接入你自己的 OpenAI-compatible 模型服务，Agent 内核与具体厂商接口解耦。
 - **Skills**：自动发现内置与用户 Skill，由 Agent 根据当前请求选择是否使用；也可从用户明确提供的公开 GitHub 链接安装完整 Skill 目录。
@@ -41,6 +41,10 @@ npm run dev
 - Electron `userData/skills/` 中的用户 Skills。
 
 Agent 会结合用户请求和当前会话判断是否选用 Skill，未匹配时按普通对话处理。当用户明确要求安装其提供的公开 GitHub Skill 链接时，ChuangDex 会下载、校验并原子写入完整 Skill 目录，不会自动执行仓库中的脚本或安装步骤。
+
+### 会话短期记忆
+
+桌面会话会保留完整原始消息；当未压缩上下文超过消息数或字符数阈值时，Agent 把较早内容更新为会话级滚动摘要，同时保留最多最近 4 个完整轮次的原文。后续请求使用「早期摘要 + 最近原文 + 当前消息」，压缩失败时自动退回最近 12 条消息继续回答。滚动摘要只用于恢复上下文，不会作为命令、Skill 安装或 MCP 调用授权。
 
 ### 长期记忆
 
@@ -117,6 +121,7 @@ React 桌面界面 / 飞书渠道
 ```bash
 npm run dev          # 开发模式，支持热更新
 npm run typecheck    # TypeScript 类型检查
+npm run test:memory  # 桌面滚动摘要与飞书固定窗口回归测试
 npm run test:mcp     # MCP 连接与 Agent 调用 smoke test
 npm run test:review  # MCP 生命周期与记忆边界回归测试
 npm run build        # 生成生产构建到 out/
@@ -138,7 +143,7 @@ src/
     service.ts              # Agent 内核入口
     providers/              # ModelProvider 抽象与当前 Provider
     skills/                 # Skill 加载、选择与安装
-    memory/                 # 长期记忆管理与持久化
+    memory/                 # 会话短期记忆与长期记忆
     tools/command.ts        # 受控命令执行器
     mcp/                    # 本地 MCP 配置、连接与工具调用
   channels/                 # 飞书渠道与定时调度

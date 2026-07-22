@@ -1,3 +1,5 @@
+import type { ShortTermMemoryState } from '../../shared/agent'
+
 export type Role = 'user' | 'assistant'
 
 export interface Message {
@@ -32,13 +34,15 @@ export interface Session {
   demo?: boolean
   /** 用户手动改过标题后为 true：自动命名永远不会再覆盖它 */
   renamed?: boolean
+  /** 给模型使用的会话滚动摘要；不替代 messages 中的完整原文 */
+  shortTermMemory?: ShortTermMemoryState
   messages: Message[]
   runs: RunRecord[]
 }
 
 /**
  * 演示会话：内容只反映 ChuangDex 当前真实能力
- * （Kimi 对话、daily-briefing Skill、飞书定时提醒），
+ * （模型对话、daily-briefing Skill、飞书定时提醒），
  * 运行记录与 Agent 服务实际产生的步骤保持一致。
  */
 export const mockSessions: Session[] = [

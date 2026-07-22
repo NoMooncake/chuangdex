@@ -342,6 +342,7 @@ function ReplyDivider(): JSX.Element {
 function ChatPanel(props: {
   session: Session
   turns: TurnGroup[]
+  busy: boolean
   onSend: (text: string) => void
   onRename: (id: string, title: string) => void
 }): JSX.Element {
@@ -370,7 +371,7 @@ function ChatPanel(props: {
 
   const submit = (): void => {
     const text = draft.trim()
-    if (!text) return
+    if (!text || props.busy) return
     props.onSend(text)
     setDraft('')
   }
@@ -460,7 +461,8 @@ function ChatPanel(props: {
         <textarea
           ref={textareaRef}
           value={draft}
-          placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
+          placeholder={props.busy ? '当前会话正在处理，请稍候…' : '输入消息，Enter 发送（Shift+Enter 换行）'}
+          disabled={props.busy}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -470,7 +472,9 @@ function ChatPanel(props: {
           }}
           rows={1}
         />
-        <button className="send-btn" type="submit">发送</button>
+        <button className="send-btn" type="submit" disabled={props.busy}>
+          {props.busy ? '处理中…' : '发送'}
+        </button>
       </form>
     </main>
   )
@@ -1105,6 +1109,8 @@ export default function App(): JSX.Element {
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([])
   const [memories, setMemories] = useState<MemoryItem[]>([])
+  /** 仅表示本次应用运行期间真实在途的桌面请求，不持久化到会话存档。 */
+  const [sendingSessionIds, setSendingSessionIds] = useState<Set<string>>(() => new Set())
 
   const refreshTasks = async (): Promise<void> => {
     const nextTasks = await window.chuangdex.tasks.load()
@@ -1317,6 +1323,10 @@ export default function App(): JSX.Element {
   }
 
   const handleSend = (text: string): void => {
+    const targetSessionId = activeId
+    if (sendingSessionIds.has(targetSessionId)) return
+    setSendingSessionIds((previous) => new Set(previous).add(targetSessionId))
+
     const time = nowTime()
     const turnId = newTurnId()
     const userMessage: Message = {
@@ -1327,18 +1337,29 @@ export default function App(): JSX.Element {
       turnId
     }
     const shouldAutoTitle = active.messages.length === 0 && !active.renamed
-    const history = active.messages.slice(-12).map((message) => ({ role: message.role, content: message.content }))
+    const history = active.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      turnId: message.turnId
+    }))
 
     setSessions((previous) =>
       previous.map((session) =>
-        session.id === activeId
+        session.id === targetSessionId
           ? { ...session, preview: text.slice(0, 30), updatedAt: time, messages: [...session.messages, userMessage] }
           : session
       )
     )
 
     window.chuangdex.agent
-      .sendMessage({ sessionId: activeId, text, history, turnId })
+      .sendMessage({
+        sessionId: targetSessionId,
+        text,
+        history,
+        shortTermMemory: active.shortTermMemory,
+        turnId
+      })
       .then((reply) => {
         const assistantMessage: Message = {
           id: 'm-' + Date.now() + '-a',
@@ -1349,7 +1370,13 @@ export default function App(): JSX.Element {
         }
         setSessions((previous) =>
           previous.map((session) =>
-            session.id === reply.sessionId ? { ...session, messages: [...session.messages, assistantMessage] } : session
+            session.id === reply.sessionId
+              ? {
+                  ...session,
+                  ...(reply.shortTermMemory ? { shortTermMemory: reply.shortTermMemory } : {}),
+                  messages: [...session.messages, assistantMessage]
+                }
+              : session
           )
         )
       })
@@ -1363,19 +1390,28 @@ export default function App(): JSX.Element {
         }
         setSessions((previous) =>
           previous.map((session) =>
-            session.id === activeId ? { ...session, messages: [...session.messages, assistantMessage] } : session
+            session.id === targetSessionId
+              ? { ...session, messages: [...session.messages, assistantMessage] }
+              : session
           )
         )
+      })
+      .finally(() => {
+        setSendingSessionIds((previous) => {
+          const next = new Set(previous)
+          next.delete(targetSessionId)
+          return next
+        })
       })
 
     if (shouldAutoTitle) {
       window.chuangdex.agent
-        .generateTitle({ sessionId: activeId, text })
+        .generateTitle({ sessionId: targetSessionId, text })
         .then(({ title }) => {
           if (!title) return
           setSessions((previous) =>
             previous.map((session) =>
-              session.id === activeId && !session.renamed ? { ...session, title } : session
+              session.id === targetSessionId && !session.renamed ? { ...session, title } : session
             )
           )
         })
@@ -1413,7 +1449,13 @@ export default function App(): JSX.Element {
 
       {view === 'chat' && (
         <>
-          <ChatPanel session={active} turns={activeTurns} onSend={handleSend} onRename={handleRename} />
+          <ChatPanel
+            session={active}
+            turns={activeTurns}
+            busy={sendingSessionIds.has(active.id)}
+            onSend={handleSend}
+            onRename={handleRename}
+          />
           <SidePanel
             session={active}
             turns={activeTurns}

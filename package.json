@@ -8,6 +8,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
+    "test:memory": "esbuild scripts/memory-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/memory-smoke.mjs && node .tmp/memory-smoke.mjs",
     "test:mcp": "esbuild scripts/mcp-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/mcp-smoke.mjs && node .tmp/mcp-smoke.mjs",
     "test:review": "esbuild scripts/review-regressions.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/review-regressions.mjs && node .tmp/review-regressions.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json"

@@ -10,7 +10,14 @@
 // 本服务负责，React 界面不参与。
 // ─────────────────────────────────────────────────────────────
 
-import type { AgentReply, AgentRunEvent, AgentTitleReply, HistoryMessage, RunStatus } from '../shared/agent'
+import type {
+  AgentReply,
+  AgentRunEvent,
+  AgentTitleReply,
+  HistoryMessage,
+  RunStatus,
+  ShortTermMemoryState
+} from '../shared/agent'
 import type { ChatMessage, ModelProvider, ToolCall, ToolDefinition } from './providers/types'
 import type { Skill, SkillMatch } from './skills/types'
 import { SkillSelector } from './skills/selector'
@@ -28,6 +35,10 @@ import {
 } from './memory/manager'
 import { MemoryStore } from './memory/store'
 import {
+  ShortTermMemoryManager,
+  shortTermSummarySystemMessage
+} from './memory/short-term'
+import {
   CommandRunner,
   type CommandExecutionResult,
   type CommandRisk
@@ -39,8 +50,10 @@ export interface AgentRequest {
   text: string
   /** 第一版长期记忆只允许桌面会话读写，飞书渠道必须显式标记为 feishu */
   source?: 'desktop' | 'feishu'
-  /** 当前会话的最近历史消息（按时间正序），服务内会再过滤并截断到上限 */
+  /** 当前会话历史（按时间正序）；桌面端传全量，其他渠道保持固定窗口 */
   history?: HistoryMessage[]
+  /** 桌面会话上一次持久化的滚动摘要 */
+  shortTermMemory?: ShortTermMemoryState
   /** true 表示这是定时任务到点后的执行：text 是创建任务时交代的内容，不是新请求 */
   scheduled?: boolean
   /** 界面生成的轮次标记，原样贴到本轮所有运行记录上 */
@@ -105,11 +118,11 @@ const SCHEDULE_SYSTEM_PROMPT =
   '- task 保留用户原意概括，去掉时间与频率表述'
 
 const UNCONFIGURED_HINT =
-  'Kimi 尚未配置：请复制 config/models.example.json 为 config/models.local.json，' +
+  '模型尚未配置：请复制 config/models.example.json 为 config/models.local.json，' +
   '填入你的 API Key、Endpoint 和模型名后重试。'
 
-/** 多轮上下文：带入模型的历史消息上限（另有当前消息） */
-const MAX_HISTORY_MESSAGES = 12
+/** 飞书与定时任务仍使用原来的固定历史窗口；桌面会话由滚动摘要管理。 */
+const MAX_EXTERNAL_HISTORY_MESSAGES = 12
 const MAX_TOOL_ROUNDS = 3
 
 const INSTALL_SKILL_TOOL: ToolDefinition = {
@@ -205,12 +218,14 @@ interface PendingMcpCall {
   arguments: Record<string, unknown>
   userText: string
   history: HistoryMessage[]
+  shortTermSummary: string
   createdAt: number
 }
 
 interface ToolCallContext {
   text: string
   history: HistoryMessage[]
+  shortTermSummary: string
 }
 
 const COMMAND_APPROVAL_TTL_MS = 10 * 60 * 1000
@@ -233,10 +248,12 @@ export class ChuangdexAgentService {
   ) {
     this.skillSelector = new SkillSelector(model)
     this.memoryManager = memoryStore ? new MemoryManager(model, memoryStore) : null
+    this.shortTermMemoryManager = new ShortTermMemoryManager(model)
   }
 
   private readonly skillSelector: SkillSelector
   private readonly memoryManager: MemoryManager | null
+  private readonly shortTermMemoryManager: ShortTermMemoryManager
   private readonly pendingCommands = new Map<string, PendingCommand>()
   private readonly pendingMcpCalls = new Map<string, PendingMcpCall>()
 
@@ -271,27 +288,82 @@ export class ChuangdexAgentService {
       if (mcpReply !== null) return { sessionId, content: mcpReply }
     }
 
-    // 2. 读取会话历史：只用当前会话提供的消息，过滤无效项，最多带入最近 12 条
+    // 2. 读取会话历史：桌面端用滚动摘要 + 最近完整轮次；其他渠道保持最近 12 条。
     const provided = request.history?.length ?? 0
-    const history = (request.history ?? [])
-      .filter(
-        (m) =>
-          m &&
-          (m.role === 'user' || m.role === 'assistant') &&
-          typeof m.content === 'string' &&
-          m.content.length > 0
-      )
-      .slice(-MAX_HISTORY_MESSAGES)
+    const normalizedHistory = (request.history ?? []).filter(
+      (m) =>
+        m &&
+        (m.role === 'user' || m.role === 'assistant') &&
+        typeof m.content === 'string' &&
+        m.content.length > 0
+    )
+    const desktopMemoryEnabled = request.source === 'desktop' && !scheduled
+    let history = desktopMemoryEnabled
+      ? normalizedHistory
+      : normalizedHistory.slice(-MAX_EXTERNAL_HISTORY_MESSAGES)
+    let shortTermSummary = ''
+    let shortTermMemoryUpdate: ShortTermMemoryState | undefined
     emit(
       this.makeRun(sessionId, '读取会话历史', `当前会话 · 提供 ${provided} 条`, 'success')
     )
+
+    if (desktopMemoryEnabled) {
+      const needsCompaction = this.shortTermMemoryManager.needsCompaction(
+        history,
+        request.shortTermMemory
+      )
+      const compactingId = needsCompaction ? this.nextId() : undefined
+      if (compactingId) {
+        emit(
+          this.makeRun(
+            sessionId,
+            '正在压缩早期对话',
+            '生成滚动摘要，同时保留最近完整轮次…',
+            'running',
+            compactingId
+          )
+        )
+      }
+
+      const prepared = await this.shortTermMemoryManager.prepare(
+        history,
+        request.shortTermMemory
+      )
+      history = prepared.history
+      shortTermSummary = prepared.summary
+      shortTermMemoryUpdate = prepared.updatedState
+
+      if (compactingId) {
+        emit(
+          this.makeRun(
+            sessionId,
+            prepared.error ? '上下文压缩失败' : '早期对话已压缩',
+            prepared.error
+              ? `${prepared.error}；已回退到最近 ${history.length} 条消息继续`
+              : `已压缩 ${prepared.compactedMessages} 条消息 · 保留最近 ${history.length} 条原文`,
+            prepared.error ? 'failed' : 'success',
+            compactingId
+          )
+        )
+      }
+    }
+
+    const makeReply = (content: string): AgentReply => ({
+      sessionId,
+      content,
+      ...(shortTermMemoryUpdate ? { shortTermMemory: shortTermMemoryUpdate } : {})
+    })
     emit(
       this.makeRun(
         sessionId,
-        `已带入 ${history.length} 条上下文消息`,
-        history.length > 0
-          ? `最近 ${history.length} 条历史 + 当前消息，按时间顺序发送`
-          : '本会话暂无历史，仅发送当前消息',
+        shortTermSummary
+          ? `已带入滚动摘要和 ${history.length} 条原文`
+          : `已带入 ${history.length} 条上下文消息`,
+        shortTermSummary
+          ? `较早对话使用摘要，最近 ${history.length} 条历史保留原文`
+          : history.length > 0
+            ? `最近 ${history.length} 条历史 + 当前消息，按时间顺序发送`
+            : '本会话暂无历史，仅发送当前消息',
         'success'
       )
     )
@@ -300,12 +372,9 @@ export class ChuangdexAgentService {
     const memoryEnabled = request.source === 'desktop' && !scheduled && this.memoryManager !== null
     let memoryTurn: MemoryTurnResult | null = null
     if (memoryEnabled && this.memoryManager) {
-      memoryTurn = await this.manageMemory(sessionId, text, emit)
+      memoryTurn = await this.manageMemory(sessionId, text, history, shortTermSummary, emit)
       if (memoryTurn?.memoryOnly) {
-        return {
-          sessionId,
-          content: formatMemoryReply(memoryTurn, this.memoryManager.list())
-        }
+        return makeReply(formatMemoryReply(memoryTurn, this.memoryManager.list()))
       }
     }
 
@@ -334,7 +403,12 @@ export class ChuangdexAgentService {
 
     let match: SkillMatch | null = null
     try {
-      const selection = await this.skillSelector.select(this.skills, text, history)
+      const selection = await this.skillSelector.select(
+        this.skills,
+        text,
+        history,
+        shortTermSummary
+      )
       if (selection.match) {
         match = selection.match
         emit(
@@ -375,7 +449,7 @@ export class ChuangdexAgentService {
     // 4. 准备调用模型（配置缺失时直接失败，给出可操作的提示）
     if (!this.model.isConfigured()) {
       emit(this.makeRun(sessionId, '准备调用模型', `模型「${this.model.name}」未配置`, 'failed'))
-      return { sessionId, content: UNCONFIGURED_HINT }
+      return makeReply(UNCONFIGURED_HINT)
     }
     emit(
       this.makeRun(
@@ -399,6 +473,9 @@ export class ChuangdexAgentService {
         role: 'system',
         content: buildSystemPrompt(match, scheduled, memories, formatMemoryOutcomeForPrompt(memoryTurn))
       },
+      ...(shortTermSummary
+        ? [{ role: 'system', content: shortTermSummarySystemMessage(shortTermSummary) } as ChatMessage]
+        : []),
       ...history,
       { role: 'user', content: text }
     ]
@@ -431,7 +508,7 @@ export class ChuangdexAgentService {
             sessionId,
             toolCall,
             authorizedRepoKeys,
-            { text, history },
+            { text, history, shortTermSummary },
             emit
           )
           if (toolCall.function.name === INSTALL_SKILL_TOOL.function.name && result.ok) {
@@ -517,32 +594,24 @@ export class ChuangdexAgentService {
         )
       )
 
-      return { sessionId, content: finalContent }
+      return makeReply(finalContent)
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       emit(this.makeRun(sessionId, runningTitle, reason, 'failed', waitingId))
       if (installedFallback?.ok) {
-        return {
-          sessionId,
-          content: `已安装 Skill：**${installedFallback.name}**\n来源：${installedFallback.source}\n${installedFallback.message}`
-        }
+        return makeReply(
+          `已安装 Skill：**${installedFallback.name}**\n来源：${installedFallback.source}\n${installedFallback.message}`
+        )
       }
       if (commandApprovalFallback) {
-        return {
-          sessionId,
-          content: formatCommandApproval(commandApprovalFallback)
-        }
+        return makeReply(formatCommandApproval(commandApprovalFallback))
       }
       if (mcpApprovalFallback) {
-        return {
-          sessionId,
-          content: formatMcpApproval(mcpApprovalFallback)
-        }
+        return makeReply(formatMcpApproval(mcpApprovalFallback))
       }
-      return {
-        sessionId,
-        content: `调用 ${this.model.name} 失败：${reason}。请检查 config/models.local.json 配置或网络后重试。`
-      }
+      return makeReply(
+        `调用 ${this.model.name} 失败：${reason}。请检查 config/models.local.json 配置或网络后重试。`
+      )
     }
   }
 
@@ -826,6 +895,7 @@ export class ChuangdexAgentService {
       arguments: args,
       userText: context.text,
       history: context.history,
+      shortTermSummary: context.shortTermSummary,
       createdAt: Date.now()
     })
     emit(
@@ -924,6 +994,14 @@ export class ChuangdexAgentService {
       const response = await this.model.chat({
         messages: [
           { role: 'system', content: MCP_RESULT_SYSTEM_PROMPT },
+          ...(pending.shortTermSummary
+            ? [
+                {
+                  role: 'system',
+                  content: shortTermSummarySystemMessage(pending.shortTermSummary)
+                } as ChatMessage
+              ]
+            : []),
           ...pending.history.slice(-6),
           { role: 'user', content: pending.userText },
           {
@@ -944,12 +1022,14 @@ export class ChuangdexAgentService {
   }
 
   /**
-   * 管理长期记忆：先让 Kimi 判断用户意图，再执行增删改查。
+   * 管理长期记忆：先让模型结合当前上下文判断用户意图，再执行增删改查。
    * 运行记录会真实展示判断结果和实际操作。
    */
   private async manageMemory(
     sessionId: string,
     text: string,
+    history: HistoryMessage[],
+    shortTermSummary: string,
     emit: RunEventSink
   ): Promise<MemoryTurnResult | null> {
     if (!this.memoryManager) return null
@@ -959,14 +1039,14 @@ export class ChuangdexAgentService {
       this.makeRun(
         sessionId,
         '正在判断是否需要更新记忆',
-        '由 Kimi 分析用户消息和当前记忆…',
+        '由模型分析当前消息、会话上下文和长期记忆…',
         'running',
         decidingId
       )
     )
 
     try {
-      const decision = await this.memoryManager.decide(text)
+      const decision = await this.memoryManager.decide(text, history, shortTermSummary)
       const turn = this.memoryManager.apply(decision)
 
       if (turn.results.length === 0) {

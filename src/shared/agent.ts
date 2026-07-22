@@ -22,6 +22,8 @@ export interface AgentRunEvent {
 export interface AgentReply {
   sessionId: string
   content: string
+  /** 本轮如果压缩了早期对话，返回新的会话级短期记忆供界面持久化 */
+  shortTermMemory?: ShortTermMemoryState
 }
 
 /** 自动命名结果：title 为 null 表示未生成（调用失败或未配置），界面保持原标题 */
@@ -32,16 +34,30 @@ export interface AgentTitleReply {
 
 /** 一条历史消息（多轮上下文用）：只含角色和内容，不含时间戳等界面数据 */
 export interface HistoryMessage {
+  /** 桌面会话使用稳定 ID 记录摘要已覆盖到哪条消息；飞书可以不传 */
+  id?: string
   role: 'user' | 'assistant'
   content: string
+  /** 用于按完整 user/assistant 轮次切分压缩边界 */
+  turnId?: string
+}
+
+/** 某个桌面会话的滚动摘要；完整原始消息仍保留在 Session 中 */
+export interface ShortTermMemoryState {
+  version: 1
+  summary: string
+  summarizedThroughMessageId: string
+  updatedAt: number
 }
 
 /** 渲染进程发给 Agent 服务的消息 */
 export interface AgentSendPayload {
   sessionId: string
   text: string
-  /** 当前会话的最近历史消息（按时间正序）；Agent 服务会再做过滤和截断 */
+  /** 当前会话历史（按时间正序）；桌面端传全量，由 Agent 组装短期上下文 */
   history?: HistoryMessage[]
+  /** 上一次持久化的会话滚动摘要；仅桌面会话使用 */
+  shortTermMemory?: ShortTermMemoryState
   /** 界面生成的轮次标记，Agent 服务原样贴到本轮所有运行记录上 */
   turnId?: string
 }

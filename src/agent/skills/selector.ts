@@ -4,6 +4,7 @@
 
 import type { ChatMessage, ModelProvider } from '../providers/types'
 import type { Skill, SkillMatch } from './types'
+import { shortTermSummarySystemMessage } from '../memory/short-term'
 
 export interface SkillSelectionResult {
   match: SkillMatch | null
@@ -19,7 +20,8 @@ export class SkillSelector {
   async select(
     skills: Skill[],
     text: string,
-    history: { role: 'user' | 'assistant'; content: string }[]
+    history: { role: 'user' | 'assistant'; content: string }[],
+    shortTermSummary = ''
   ): Promise<SkillSelectionResult> {
     if (skills.length === 0) {
       return { match: null, state: 'none' }
@@ -32,6 +34,14 @@ export class SkillSelector {
       const response = await this.model.chat({
         messages: [
           { role: 'system', content: buildSelectorPrompt(skills) },
+          ...(shortTermSummary
+            ? [
+                {
+                  role: 'system',
+                  content: shortTermSummarySystemMessage(shortTermSummary)
+                } as ChatMessage
+              ]
+            : []),
           ...history.slice(-6).map((message) => ({ role: message.role, content: message.content }) as ChatMessage),
           { role: 'user', content: text }
         ]
