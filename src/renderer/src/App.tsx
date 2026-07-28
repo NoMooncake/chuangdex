@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { CaretLeft, CaretRight } from '@phosphor-icons/react'
 import { Message, mockSessions, RunRecord, Session } from './mock'
 import { MarkdownMessage } from './MarkdownMessage'
 import type {
@@ -154,58 +155,55 @@ function SessionList(props: {
   sessions: Session[]
   activeId: string
   view: AppView
-  theme: 'light' | 'dark'
+  taskCount: number
+  skillCount: number
+  mcpCount: number
+  memoryCount: number
   onSelect: (id: string) => void
-  onNewChat: () => void
+  onViewChat: () => void
   onViewScheduled: () => void
   onViewSkills: () => void
   onViewMcp: () => void
   onViewMemories: () => void
-  onToggleTheme: () => void
   onDelete: (id: string) => void
 }): JSX.Element {
-  return (
-    <aside className="panel sidebar">
-      <div className="panel-header">
-        <span className="logo">◆ ChuangDex</span>
-      </div>
+  const navItems = [
+    { key: 'chat', count: props.sessions.length, label: '对话', onClick: props.onViewChat },
+    { key: 'scheduled', count: props.taskCount, label: '已安排', onClick: props.onViewScheduled },
+    { key: 'skills', count: props.skillCount, label: 'Skills', onClick: props.onViewSkills },
+    { key: 'mcp', count: props.mcpCount, label: 'MCP', onClick: props.onViewMcp },
+    { key: 'memories', count: props.memoryCount, label: '记忆', onClick: props.onViewMemories }
+  ] as const
 
-      <nav className="sidebar-nav">
-        <button className="nav-item" onClick={props.onNewChat}>
-          <span className="nav-icon">＋</span>
-          <span>新建对话</span>
-        </button>
-        <button
-          className={'nav-item' + (props.view === 'scheduled' ? ' active' : '')}
-          onClick={props.onViewScheduled}
-        >
-          <span className="nav-icon">⏰</span>
-          <span>已安排</span>
-        </button>
-        <button
-          className={'nav-item' + (props.view === 'skills' ? ' active' : '')}
-          onClick={props.onViewSkills}
-        >
-          <span className="nav-icon">☰</span>
-          <span>Skills</span>
-        </button>
-        <button
-          className={'nav-item' + (props.view === 'mcp' ? ' active' : '')}
-          onClick={props.onViewMcp}
-        >
-          <span className="nav-icon">⌘</span>
-          <span>MCP</span>
-        </button>
-        <button
-          className={'nav-item' + (props.view === 'memories' ? ' active' : '')}
-          onClick={props.onViewMemories}
-        >
-          <span className="nav-icon">🧠</span>
-          <span>记忆</span>
-        </button>
+  return (
+    <aside className="workbench-sidebar">
+      <header className="workbench-brand">
+        <div className="workbench-brand-row">
+          <span>ChuangDex</span>
+          <small>WORKBENCH</small>
+        </div>
+        <p>本地优先的 Agent 协作桌面</p>
+      </header>
+
+      <nav className="workbench-nav-grid" aria-label="主要功能">
+        {navItems.map((item) => (
+          <button
+            key={item.key}
+            className={'workbench-nav-tile' + (props.view === item.key ? ' active' : '')}
+            onClick={item.onClick}
+          >
+            <strong>{String(item.count).padStart(2, '0')}</strong>
+            <span>{item.label}</span>
+          </button>
+        ))}
       </nav>
 
-      <div className="session-list">
+      <div className="workbench-section-title">
+        <span>最近工作</span>
+        <span>{props.sessions.length} 个会话</span>
+      </div>
+
+      <div className="workbench-session-list">
         {props.sessions.map((session) => {
           const running = isSessionRunning(session)
           return (
@@ -213,7 +211,7 @@ function SessionList(props: {
               key={session.id}
               role="button"
               tabIndex={0}
-              className={'session-item' + (session.id === props.activeId && props.view === 'chat' ? ' active' : '')}
+              className={'workbench-session' + (session.id === props.activeId && props.view === 'chat' ? ' active' : '')}
               onClick={() => props.onSelect(session.id)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
@@ -222,38 +220,34 @@ function SessionList(props: {
                 }
               }}
             >
-              <div className="session-title-row">
-                <span className={'s-dot' + (running ? ' running' : '')} aria-hidden="true" />
-                <span className="session-title">{session.title}</span>
+              <div className="workbench-session-title">
+                <span>{session.title}</span>
+                {running && <span className="workbench-running-dot" aria-label="正在处理" />}
               </div>
-              <div className="session-preview">{running ? '处理中…' : session.preview}</div>
-              <div className="session-time">{session.updatedAt}</div>
+              <div className="workbench-session-preview">{running ? 'Agent 正在处理…' : session.preview}</div>
+              <div className="workbench-session-meta">
+                <span>{session.updatedAt}</span>
+                {session.demo && <span>演示</span>}
+              </div>
               <button
-                className="session-delete"
+                className="workbench-session-delete"
                 title="删除会话"
                 onClick={(event) => {
                   event.stopPropagation()
                   props.onDelete(session.id)
                 }}
               >
-                ×
+                删除
               </button>
             </div>
           )
         })}
       </div>
-      <div className="sidebar-footer">
-        <span className="avatar">C</span>
-        <span className="footer-name">Chuang</span>
-        <span className="footer-status">本地模式</span>
-        <button
-          className="icon-btn theme-toggle"
-          title={props.theme === 'dark' ? '切换为浅色' : '切换为深色'}
-          onClick={props.onToggleTheme}
-        >
-          {props.theme === 'dark' ? '☀' : '🌙'}
-        </button>
-      </div>
+
+      <footer className="workbench-sidebar-footer">
+        <span className="workbench-avatar">C</span>
+        <span><strong>Chuang</strong><small>本地模式</small></span>
+      </footer>
     </aside>
   )
 }
@@ -341,10 +335,33 @@ function ReplyDivider(): JSX.Element {
   return <div className="reply-divider" />
 }
 
+function selectedSkillForTurn(turn: TurnGroup | undefined): { name: string; description: string } | null {
+  if (!turn) return null
+  const run = turn.runs.find(
+    (item) => item.title.startsWith('决定使用 ') || item.title.startsWith('选择 ')
+  )
+  if (!run) return null
+  return {
+    name: run.title.replace(/^决定使用 /, '').replace(/^选择 /, ''),
+    description: run.detail.replace(/^用途：/, '') || '本轮已使用该 Skill'
+  }
+}
+
+function contextCountForTurn(turn: TurnGroup | undefined): string {
+  if (!turn) return '—'
+  const run = turn.runs.find(
+    (item) => item.title.startsWith('已带入 ') || item.title.includes('滚动摘要和')
+  )
+  if (!run) return '—'
+  const count = run.title.match(/(\d+)\s*条/)
+  return count ? `${count[1]} 条会话消息` : run.title
+}
+
 function ChatPanel(props: {
   session: Session
   turns: TurnGroup[]
   busy: boolean
+  memories: MemoryItem[]
   onSend: (text: string) => void
   onRename: (id: string, title: string) => void
 }): JSX.Element {
@@ -389,95 +406,142 @@ function ChatPanel(props: {
     setEditingTitle(false)
   }
 
+  const latest = useMemo(
+    () => [...props.turns].reverse().find((turn) => turn.user || turn.runs.length > 0),
+    [props.turns]
+  )
+  const selectedSkill = useMemo(() => selectedSkillForTurn(latest), [latest])
+  const contextCount = useMemo(() => contextCountForTurn(latest), [latest])
+
   return (
-    <main className="panel chat">
-      <div className="panel-header chat-header">
-        {editingTitle ? (
-          <span className="title-edit">
-            <input
-              value={titleDraft}
-              autoFocus
-              maxLength={30}
-              onChange={(event) => setTitleDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') saveRename()
-                if (event.key === 'Escape') setEditingTitle(false)
-              }}
-            />
-            <button className="btn small" onClick={saveRename}>保存</button>
-            <button className="btn small" onClick={() => setEditingTitle(false)}>取消</button>
-          </span>
-        ) : (
-          <>
-            <span className="chat-title">{props.session.title}</span>
-            <button className="icon-btn title-edit-btn" title="重命名会话" onClick={startRename}>✎</button>
-          </>
-        )}
-        {props.session.demo && <span className="badge">演示数据</span>}
-      </div>
-
-      <div className="message-list" ref={listRef}>
-        {props.turns.length === 0 && (
-          <div className="empty-state">全新会话，从下方输入第一条消息开始。</div>
-        )}
-
-        {props.turns.map((turn) => (
-          <section key={turn.turnId} className="turn">
-            {turn.user && (
-              <div className="message-row user">
-                <div className="message-body">
-                  <div className="message-content">{turn.user.content}</div>
-                  <div className="message-time">{turn.user.time}</div>
-                </div>
+    <main className="workbench-chat-surface">
+      <section className="workbench-chat-main">
+        <div className="workbench-message-list" ref={listRef}>
+          <header className="workbench-document-header">
+            <div className="workbench-document-kicker">
+              CHAT / {props.session.updatedAt}
+              {selectedSkill && <span>{selectedSkill.name}</span>}
+              {props.session.demo && <span>演示数据</span>}
+            </div>
+            {editingTitle ? (
+              <div className="workbench-title-edit">
+                <input
+                  value={titleDraft}
+                  autoFocus
+                  maxLength={30}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') saveRename()
+                    if (event.key === 'Escape') setEditingTitle(false)
+                  }}
+                />
+                <button onClick={saveRename}>保存</button>
+                <button onClick={() => setEditingTitle(false)}>取消</button>
+              </div>
+            ) : (
+              <div className="workbench-document-title-row">
+                <h1>{props.session.title}</h1>
+                <button onClick={startRename}>重命名</button>
               </div>
             )}
+            <p>桌面会话 · 本地处理 · 完整消息与执行记录均保存在当前设备</p>
+          </header>
 
-            {(turn.runs.length > 0 || turn.running) && (
-              <>
-                <TurnSummary turn={turn} />
-                <ReplyDivider />
-              </>
-            )}
+          {props.turns.length === 0 && (
+            <div className="workbench-empty-chat">
+              <strong>开始一次新的协作</strong>
+              <span>从下方输入任务，ChuangDex 会在这里展示回复和真实执行过程。</span>
+            </div>
+          )}
 
-            {turn.assistant && (
-              <div className="message-row assistant">
-                <div className="message-body">
-                  <div className="message-content">
+          {props.turns.map((turn) => (
+            <section key={turn.turnId} className="workbench-turn">
+              {turn.user && (
+                <div className="workbench-request">
+                  <div className="workbench-request-label">
+                    <strong>你的任务</strong>
+                    <span>{turn.user.time}</span>
+                  </div>
+                  <div className="workbench-request-text">{turn.user.content}</div>
+                </div>
+              )}
+
+              {(turn.runs.length > 0 || turn.running) && (
+                <div className={'workbench-inline-status ' + runState(turn)}>
+                  <span>{runStateLabel(turn)}</span>
+                  <span>{turn.runs.length} 个步骤</span>
+                  <span>{runDuration(turn) ?? (turn.running ? '执行中' : '—')}</span>
+                </div>
+              )}
+
+              {turn.assistant && (
+                <article className="workbench-response">
+                  <div className="workbench-response-kicker">CHUANGDEX RESPONSE</div>
+                  <div className="workbench-response-content">
                     <MarkdownMessage content={turn.assistant.content} />
                   </div>
-                  <div className="message-time">{turn.assistant.time}</div>
-                </div>
-              </div>
-            )}
-          </section>
-        ))}
-      </div>
+                  <div className="workbench-response-time">{turn.assistant.time}</div>
+                </article>
+              )}
+            </section>
+          ))}
+        </div>
 
-      <form
-        className="composer"
-        onSubmit={(event) => {
-          event.preventDefault()
-          submit()
-        }}
-      >
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          placeholder={props.busy ? '当前会话正在处理，请稍候…' : '输入消息，Enter 发送（Shift+Enter 换行）'}
-          disabled={props.busy}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault()
-              submit()
-            }
+        <form
+          className="workbench-composer"
+          onSubmit={(event) => {
+            event.preventDefault()
+            submit()
           }}
-          rows={1}
-        />
-        <button className="send-btn" type="submit" disabled={props.busy}>
-          {props.busy ? '处理中…' : '发送'}
-        </button>
-      </form>
+        >
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            placeholder={props.busy ? '当前会话正在处理，请稍候…' : '继续和 ChuangDex 协作…'}
+            disabled={props.busy}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                submit()
+              }
+            }}
+            rows={1}
+          />
+          <button type="submit" disabled={props.busy}>
+            {props.busy ? '处理中…' : '发送'}
+          </button>
+        </form>
+      </section>
+
+      <aside className="workbench-context">
+        <header>
+          <h2>协作上下文</h2>
+          <p>当前会话可由前端确认的能力与信息</p>
+        </header>
+        <section>
+          <div className="workbench-context-label">SELECTED SKILL</div>
+          <strong>{selectedSkill?.name ?? '本轮未使用 Skill'}</strong>
+          <p>{selectedSkill?.description ?? '当前请求按普通对话处理。'}</p>
+        </section>
+        <section>
+          <div className="workbench-context-label">CONTEXT</div>
+          <strong>{contextCount}</strong>
+          <p>来自本轮真实执行记录。</p>
+        </section>
+        <section>
+          <div className="workbench-context-label">当前长期记忆</div>
+          {props.memories.length > 0 ? (
+            <div className="workbench-memory-chips">
+              {props.memories.slice(0, 4).map((memory) => (
+                <span key={memory.id} title={memory.content}>{memory.content}</span>
+              ))}
+            </div>
+          ) : (
+            <p>当前没有长期记忆。</p>
+          )}
+        </section>
+      </aside>
     </main>
   )
 }
@@ -1110,6 +1174,191 @@ function MemoryView(props: {
   )
 }
 
+function WorkspaceTabs(props: {
+  sessions: Session[]
+  openSessionIds: string[]
+  activeId: string
+  view: AppView
+  busy: boolean
+  onSelect: (id: string) => void
+  onClose: (id: string) => void
+  onNewChat: () => void
+}): JSX.Element {
+  const opened = props.openSessionIds
+    .map((id) => props.sessions.find((session) => session.id === id))
+    .filter((session): session is Session => Boolean(session))
+
+  return (
+    <header className="workbench-tabbar">
+      <div className="workbench-tabs" role="tablist" aria-label="已打开的会话">
+        {opened.map((session) => (
+          <div
+            key={session.id}
+            className={'workbench-tab' + (props.view === 'chat' && session.id === props.activeId ? ' active' : '')}
+          >
+            <button
+              className="workbench-tab-select"
+              role="tab"
+              aria-selected={props.view === 'chat' && session.id === props.activeId}
+              onClick={() => props.onSelect(session.id)}
+            >
+              {session.title}
+            </button>
+            <button
+              className="workbench-tab-close"
+              title={`关闭「${session.title}」标签`}
+              onClick={() => props.onClose(session.id)}
+            >
+              关闭
+            </button>
+          </div>
+        ))}
+        <button className="workbench-tab-new" onClick={props.onNewChat}>新建</button>
+      </div>
+      <div className={'workbench-agent-state' + (props.busy ? ' busy' : '')}>
+        <span className="workbench-agent-dot" />
+        {props.busy ? 'Agent 正在执行' : '本地模式'}
+      </div>
+    </header>
+  )
+}
+
+function shouldShowRunInTray(run: RunRecord): boolean {
+  if (run.status === 'failed') return true
+
+  const duplicatedByContextPanel = [
+    /^读取会话历史$/,
+    /^已带入 /,
+    /^发现 Skills$/,
+    /^正在判断是否需要 Skill$/,
+    /^决定使用 /,
+    /^决定不使用 Skill$/,
+    /^选择 /,
+    /^未匹配 Skill$/,
+    /^正在判断是否需要更新记忆$/,
+    /^准备回忆记忆$/,
+    /^记忆无需更新$/,
+    /^已处理 \d+ 项记忆操作$/
+  ]
+  if (duplicatedByContextPanel.some((pattern) => pattern.test(run.title))) return false
+
+  const instantBookkeeping = [
+    /^收到消息$/,
+    /^已收到模型回复$/,
+    /^会话已自动命名$/
+  ]
+  return !instantBookkeeping.some((pattern) => pattern.test(run.title))
+}
+
+function RunTray({ turn }: { turn: TurnGroup | undefined }): JSX.Element {
+  const stepsRef = useRef<HTMLDivElement>(null)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const visibleRuns = useMemo(
+    () => turn?.runs.filter(shouldShowRunInTray) ?? [],
+    [turn]
+  )
+  const completed = visibleRuns.filter((run) => run.status === 'success').length
+
+  useEffect(() => {
+    const steps = stepsRef.current
+    if (!steps) return
+
+    const updateScrollControls = (): void => {
+      setCanScrollLeft(steps.scrollLeft > 2)
+      setCanScrollRight(steps.scrollLeft + steps.clientWidth < steps.scrollWidth - 2)
+    }
+
+    updateScrollControls()
+    steps.addEventListener('scroll', updateScrollControls, { passive: true })
+    const resizeObserver = new ResizeObserver(updateScrollControls)
+    resizeObserver.observe(steps)
+
+    return () => {
+      steps.removeEventListener('scroll', updateScrollControls)
+      resizeObserver.disconnect()
+    }
+  }, [visibleRuns.length])
+
+  useEffect(() => {
+    const steps = stepsRef.current
+    if (!steps) return
+    const runningStep = steps.querySelector<HTMLElement>('[data-run-status="running"]')
+    if (!runningStep) return
+    const targetLeft = runningStep.offsetLeft - (steps.clientWidth - runningStep.clientWidth) / 2
+    steps.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' })
+  }, [visibleRuns.map((run) => `${run.id}:${run.status}`).join('|')])
+
+  const scrollPage = (direction: -1 | 1): void => {
+    const steps = stepsRef.current
+    if (!steps) return
+    const distance = Math.max(steps.clientWidth * 0.85, 185)
+    steps.scrollBy({ left: direction * distance, behavior: 'smooth' })
+  }
+
+  return (
+    <section className="workbench-run-tray">
+      <div className="workbench-run-summary">
+        <div className="workbench-run-label">THIS RUN</div>
+        <strong>{turn ? runDuration(turn) ?? (turn.running ? '执行中' : '—') : '—'}</strong>
+        <p>
+          {turn
+            ? `${completed}/${visibleRuns.length} 个关键步骤完成`
+            : '当前会话暂无执行记录'}
+        </p>
+        {turn && <span className={'workbench-run-state ' + runState(turn)}>{runStateLabel(turn)}</span>}
+      </div>
+      <div className="workbench-run-track">
+        <div className="workbench-run-steps" ref={stepsRef}>
+          {turn && visibleRuns.length > 0 ? (
+            visibleRuns.map((run, index) => (
+              <article
+                key={run.id}
+                className={'workbench-run-step ' + run.status}
+                data-run-status={run.status}
+                aria-current={run.status === 'running' ? 'step' : undefined}
+              >
+                <div className="workbench-run-step-head">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <time>{run.time}</time>
+                </div>
+                <strong>{run.title}</strong>
+                <p>{run.detail}</p>
+              </article>
+            ))
+          ) : (
+            <div className="workbench-run-empty">
+              {turn?.running
+                ? '正在准备需要持续展示的关键步骤…'
+                : '本轮没有需要持续展示的关键步骤。'}
+            </div>
+          )}
+        </div>
+        {canScrollLeft && (
+          <button
+            type="button"
+            className="workbench-run-page-button left"
+            aria-label="向左翻一页"
+            onClick={() => scrollPage(-1)}
+          >
+            <CaretLeft size={18} weight="bold" />
+          </button>
+        )}
+        {canScrollRight && (
+          <button
+            type="button"
+            className="workbench-run-page-button right"
+            aria-label="向右翻一页"
+            onClick={() => scrollPage(1)}
+          >
+            <CaretRight size={18} weight="bold" />
+          </button>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function EmptyRunPanel(props: { collapsed: boolean; onToggle: () => void }): JSX.Element {
   if (props.collapsed) {
     return (
@@ -1136,13 +1385,9 @@ function EmptyRunPanel(props: { collapsed: boolean; onToggle: () => void }): JSX
 export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<Session[]>(mockSessions)
   const [activeId, setActiveId] = useState<string>(mockSessions[0].id)
+  const [openSessionIds, setOpenSessionIds] = useState<string[]>([mockSessions[0].id])
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null)
   const [loaded, setLoaded] = useState(false)
-  const [sideCollapsed, setSideCollapsed] = useState(false)
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('chuangdex-theme')
-    return saved === 'light' ? 'light' : 'dark'
-  })
   const [view, setView] = useState<AppView>('chat')
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -1179,8 +1424,18 @@ export default function App(): JSX.Element {
         if (cancelled) return
         if (result && isValidSessionData(result.sessions)) {
           const restored = result.sessions
+          const validIds = new Set(restored.map((session) => session.id))
+          const restoredTabs = (result.openSessionIds ?? [result.activeId])
+            .filter((id) => validIds.has(id))
+          const nextTabs = Array.from(new Set(restoredTabs))
           setSessions(restored)
-          setActiveId(restored.some((session) => session.id === result.activeId) ? result.activeId : restored[0].id)
+          const nextActiveId = validIds.has(result.activeId) ? result.activeId : restored[0].id
+          setActiveId(nextActiveId)
+          setOpenSessionIds(
+            nextTabs.length > 0
+              ? (nextTabs.includes(nextActiveId) ? nextTabs : [...nextTabs, nextActiveId])
+              : [nextActiveId]
+          )
         }
         setLoaded(true)
       })
@@ -1196,15 +1451,31 @@ export default function App(): JSX.Element {
   useEffect(() => {
     if (!loaded) return
     window.chuangdex.sessions
-      .save({ activeId, sessions })
+      .save({ activeId, openSessionIds, sessions })
       .catch((error) => console.error('会话保存失败:', error))
-  }, [sessions, activeId, loaded])
+  }, [sessions, activeId, openSessionIds, loaded])
 
   useEffect(() => {
     window.chuangdex
-      .setTheme(theme)
+      .setTheme('light')
       .catch((error) => console.error('同步原生标题栏主题失败：', error))
-  }, [theme])
+  }, [])
+
+  useEffect(() => {
+    Promise.allSettled([
+      refreshTasks(),
+      refreshSkills(),
+      refreshMcp(),
+      refreshMemories()
+    ]).then((results) => {
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          const labels = ['定时任务', 'Skills', 'MCP Server', '记忆']
+          console.error(`加载${labels[index]}失败：`, result.reason)
+        }
+      })
+    })
+  }, [])
 
   // 查看“已安排”时，从主进程读取真实定时任务数据
   useEffect(() => {
@@ -1235,6 +1506,10 @@ export default function App(): JSX.Element {
     [sessions, activeId]
   )
   const activeTurns = useMemo(() => groupTurns(active), [active])
+  const latestTurn = useMemo(
+    () => [...activeTurns].reverse().find((turn) => turn.user || turn.runs.length > 0),
+    [activeTurns]
+  )
 
   useEffect(() => {
     const unsubscribe = window.chuangdex.agent.onRunEvent((event) => {
@@ -1330,14 +1605,17 @@ export default function App(): JSX.Element {
     const fresh = makeEmptySession(sessions)
     setSessions((previous) => [fresh, ...previous])
     setActiveId(fresh.id)
+    setOpenSessionIds((previous) => [...previous, fresh.id])
     setView('chat')
   }
 
   const handleSelectSession = (id: string): void => {
     setActiveId(id)
+    setOpenSessionIds((previous) => previous.includes(id) ? previous : [...previous, id])
     setView('chat')
   }
 
+  const handleViewChat = (): void => setView('chat')
   const handleViewScheduled = (): void => setView('scheduled')
   const handleViewSkills = (): void => {
     setView('skills')
@@ -1356,19 +1634,6 @@ export default function App(): JSX.Element {
     await window.chuangdex.memories.remove(id)
     await refreshMemories()
   }
-
-  const toggleTheme = useCallback((): void => {
-    setTheme((prev) => {
-      const next = prev === 'light' ? 'dark' : 'light'
-      localStorage.setItem('chuangdex-theme', next)
-      if (next === 'light') {
-        document.documentElement.classList.add('light')
-      } else {
-        document.documentElement.classList.remove('light')
-      }
-      return next
-    })
-  }, [])
 
   const handleCreateTask = async (input: TaskCreateInput): Promise<void> => {
     await window.chuangdex.tasks.create(input)
@@ -1410,17 +1675,44 @@ export default function App(): JSX.Element {
     if (target) setPendingDelete(target)
   }
 
+  const handleCloseTab = (id: string): void => {
+    const index = openSessionIds.indexOf(id)
+    const nextOpenIds = openSessionIds.filter((sessionId) => sessionId !== id)
+    if (id === activeId) {
+      const fallbackId = nextOpenIds[Math.min(index, nextOpenIds.length - 1)]
+        ?? sessions.find((session) => session.id !== id)?.id
+      if (fallbackId) {
+        if (!nextOpenIds.includes(fallbackId)) nextOpenIds.push(fallbackId)
+        setActiveId(fallbackId)
+      } else {
+        const fresh = makeEmptySession(sessions)
+        setSessions([fresh])
+        nextOpenIds.push(fresh.id)
+        setActiveId(fresh.id)
+      }
+    }
+    setOpenSessionIds(nextOpenIds)
+    setView('chat')
+  }
+
   const handleConfirmDelete = (): void => {
     if (!pendingDelete) return
     const index = sessions.findIndex((session) => session.id === pendingDelete.id)
     const remaining = sessions.filter((session) => session.id !== pendingDelete.id)
+    const nextOpenIds = openSessionIds.filter((id) => id !== pendingDelete.id)
     if (remaining.length === 0) {
       const fresh = makeEmptySession(remaining)
       setSessions([fresh])
       setActiveId(fresh.id)
+      setOpenSessionIds([fresh.id])
     } else {
       setSessions(remaining)
-      if (pendingDelete.id === activeId) setActiveId(remaining[Math.min(index, remaining.length - 1)].id)
+      if (pendingDelete.id === activeId) {
+        const nextActive = remaining[Math.min(index, remaining.length - 1)].id
+        setActiveId(nextActive)
+        if (!nextOpenIds.includes(nextActive)) nextOpenIds.push(nextActive)
+      }
+      setOpenSessionIds(nextOpenIds)
     }
     setPendingDelete(null)
   }
@@ -1537,70 +1829,68 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div
-      className="app"
-      style={{ gridTemplateColumns: sideCollapsed ? '260px minmax(0, 1fr) 46px' : '260px minmax(0, 1fr) 330px' }}
-    >
+    <div className="workbench-app">
       <SessionList
         sessions={sessions}
         activeId={activeId}
         view={view}
-        theme={theme}
+        taskCount={tasks.length}
+        skillCount={skills.length}
+        mcpCount={mcpServers.length}
+        memoryCount={memories.length}
         onSelect={handleSelectSession}
-        onNewChat={handleNewChat}
+        onViewChat={handleViewChat}
         onViewScheduled={handleViewScheduled}
         onViewSkills={handleViewSkills}
         onViewMcp={handleViewMcp}
         onViewMemories={handleViewMemories}
-        onToggleTheme={toggleTheme}
         onDelete={handleRequestDelete}
       />
 
-      {view === 'chat' && (
-        <>
+      <section className={'workbench-shell ' + (view === 'chat' ? 'chat-mode' : 'secondary-mode')}>
+        <WorkspaceTabs
+          sessions={sessions}
+          openSessionIds={openSessionIds}
+          activeId={activeId}
+          view={view}
+          busy={sendingSessionIds.size > 0}
+          onSelect={handleSelectSession}
+          onClose={handleCloseTab}
+          onNewChat={handleNewChat}
+        />
+
+        {view === 'chat' && (
           <ChatPanel
             session={active}
             turns={activeTurns}
             busy={sendingSessionIds.has(active.id)}
+            memories={memories}
             onSend={handleSend}
             onRename={handleRename}
           />
-          <SidePanel
-            session={active}
-            turns={activeTurns}
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((value) => !value)}
-          />
-        </>
-      )}
+        )}
 
-      {view === 'scheduled' && (
-        <>
+        {view === 'chat' && <RunTray turn={latestTurn} />}
+
+        {view === 'scheduled' && (
+          <div className="workbench-secondary-view">
           <ScheduledView
             tasks={tasks}
             onCreate={handleCreateTask}
             onUpdate={handleUpdateTask}
             onRemove={handleRemoveTask}
           />
-          <EmptyRunPanel
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((value) => !value)}
-          />
-        </>
-      )}
+          </div>
+        )}
 
-      {view === 'skills' && (
-        <>
+        {view === 'skills' && (
+          <div className="workbench-secondary-view">
           <SkillsView skills={skills} />
-          <EmptyRunPanel
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((value) => !value)}
-          />
-        </>
-      )}
+          </div>
+        )}
 
-      {view === 'mcp' && (
-        <>
+        {view === 'mcp' && (
+          <div className="workbench-secondary-view">
           <McpView
             servers={mcpServers}
             onCreate={handleCreateMcp}
@@ -1608,22 +1898,15 @@ export default function App(): JSX.Element {
             onRemove={handleRemoveMcp}
             onReconnect={handleReconnectMcp}
           />
-          <EmptyRunPanel
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((value) => !value)}
-          />
-        </>
-      )}
+          </div>
+        )}
 
-      {view === 'memories' && (
-        <>
+        {view === 'memories' && (
+          <div className="workbench-secondary-view">
           <MemoryView memories={memories} onRemove={handleRemoveMemory} />
-          <EmptyRunPanel
-            collapsed={sideCollapsed}
-            onToggle={() => setSideCollapsed((value) => !value)}
-          />
-        </>
-      )}
+          </div>
+        )}
+      </section>
 
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>

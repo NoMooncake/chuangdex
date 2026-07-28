@@ -4,11 +4,11 @@
 
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import type { KimiConfig } from '../agent/providers/kimi'
+import type { OpenAIConfig } from '../agent/providers/openai'
 
 export interface ModelsConfigFile {
   providers?: {
-    kimi?: Partial<KimiConfig>
+    openai?: Partial<OpenAIConfig>
   }
 }
 
@@ -17,16 +17,16 @@ export function modelsConfigPath(appPath: string): string {
   return join(appPath, 'config', 'models.local.json')
 }
 
-/** 读取 Kimi 配置；文件缺失、JSON 损坏或字段不全时返回 null */
-export function loadKimiConfig(appPath: string): KimiConfig | null {
+/** 读取 OpenAI 配置；文件缺失、JSON 损坏或字段不全时返回 null */
+export function loadOpenAIConfig(appPath: string): OpenAIConfig | null {
   const file = modelsConfigPath(appPath)
   if (!existsSync(file)) return null
 
   try {
     const raw = JSON.parse(readFileSync(file, 'utf-8')) as ModelsConfigFile
-    const kimi = raw.providers?.kimi
-    if (!kimi?.apiKey || !kimi.baseUrl || !kimi.model) return null
-    return { apiKey: kimi.apiKey, baseUrl: kimi.baseUrl, model: kimi.model }
+    const openai = raw.providers?.openai
+    if (!openai?.apiKey || !openai.baseUrl || !openai.model) return null
+    return { apiKey: openai.apiKey, baseUrl: openai.baseUrl, model: openai.model }
   } catch {
     return null
   }

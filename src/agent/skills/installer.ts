@@ -246,6 +246,91 @@ export function validateSkillMarkdown(content: string, source: string): Skill | 
   return parseSkillFile(source, content)
 }
 
+// ── 受限 archive 探针：GitHub API 限流/树截断时的安全降级验证 ──
+
+export interface SkillArchiveProbeResult {
+  /** 包含 SKILL.md 的目录（'' 表示仓库根目录），升序 */
+  dirs: string[]
+  /** 下载快照（ETag 或 ref），用于证据展示与追溯 */
+  snapshot: string
+  /** 读取指定目录根部的 SKILL.md 内容；不存在返回 null */
+  readSkillMarkdown(dir: string): Buffer | null
+}
+
+const MAX_PROBE_MARKDOWN_COUNT = 50
+const MAX_PROBE_MARKDOWN_BYTES = 256 * 1024
+
+/**
+ * 下载一次源码压缩包（沿用 30MB 压缩 / 100MB 解压限制），
+ * 只列出 SKILL.md 所在目录并读取其内容——不写盘、不执行任何内容、
+ * 不伪造客户端身份。供 Skill 来源验证在 GitHub API 不可用时降级使用。
+ */
+export async function probeSkillArchive(
+  owner: string,
+  repo: string,
+  ref?: string
+): Promise<SkillArchiveProbeResult> {
+  const archive = await downloadSourceArchive(owner, repo, ref ?? 'HEAD')
+  const entries = await readArchiveEntries(archive.tar)
+  const dirs = new Set<string>()
+  for (const entry of entries) {
+    if (!isArchiveFile(entry)) continue
+    if (/(^|\/)skill\.md$/i.test(entry.path)) {
+      const dir = posix.dirname(entry.path)
+      dirs.add(dir === '.' ? '' : dir)
+    }
+  }
+  const markdownFiles = await collectArchiveMarkdownFiles(archive.tar)
+  return {
+    dirs: [...dirs].sort(),
+    snapshot: archive.snapshot,
+    readSkillMarkdown(dir: string): Buffer | null {
+      const key = (dir ? `${dir}/SKILL.md` : 'SKILL.md').toLowerCase()
+      return markdownFiles.get(key) ?? null
+    }
+  }
+}
+
+/** 第二遍扫描压缩包，只收集 SKILL.md 文件内容（每个 ≤256KB，最多 50 个）。 */
+function collectArchiveMarkdownFiles(tar: Buffer): Promise<Map<string, Buffer>> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const files = new Map<string, Buffer>()
+    const unpack = extract()
+    unpack.on('entry', (header, stream, next) => {
+      void (async () => {
+        const archivePath = stripArchiveRoot(header.name)
+        const isMarkdown =
+          (header.type === 'file' || header.type === 'contiguous-file') &&
+          /(^|\/)skill\.md$/i.test(archivePath)
+        if (!archivePath || !isMarkdown) {
+          stream.resume()
+          await new Promise<void>((resolveEnd) => stream.on('end', resolveEnd))
+          next()
+          return
+        }
+        if (files.size >= MAX_PROBE_MARKDOWN_COUNT) {
+          throw new SkillInstallError('仓库中 SKILL.md 数量过多，停止验证')
+        }
+        const chunks: Buffer[] = []
+        let fileBytes = 0
+        for await (const chunk of stream) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          fileBytes += buffer.byteLength
+          if (fileBytes > MAX_PROBE_MARKDOWN_BYTES) {
+            throw new SkillInstallError('SKILL.md 超过 256 KB，停止验证')
+          }
+          chunks.push(buffer)
+        }
+        files.set(archivePath.toLowerCase(), Buffer.concat(chunks))
+        next()
+      })().catch((err) => next(err))
+    })
+    unpack.on('finish', () => resolvePromise(files))
+    unpack.on('error', rejectPromise)
+    Readable.from(tar).pipe(unpack)
+  })
+}
+
 export function isSafeSkillName(name: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(name)
 }

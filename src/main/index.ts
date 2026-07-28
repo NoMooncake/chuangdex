@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, powerMonitor, shell } from 'electron'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { ChuangdexAgentService } from '../agent/service'
-import { KimiProvider } from '../agent/providers/kimi'
+import { OpenAIProvider } from '../agent/providers/openai'
 import { loadSkills } from '../agent/skills/loader'
+import { SkillDiscoveryService } from '../agent/skills/discovery'
 import { MemoryStore } from '../agent/memory/store'
 import { CommandRunner } from '../agent/tools/command'
 import { McpManager } from '../agent/mcp/manager'
@@ -35,7 +36,7 @@ import {
   TaskRemoveInput,
   TaskUpdateInput
 } from '../shared/agent'
-import { loadKimiConfig, modelsConfigPath } from './model-config'
+import { loadOpenAIConfig, modelsConfigPath } from './model-config'
 import { feishuConfigPath, loadFeishuConfig } from './feishu-config'
 import { startFeishuBot } from '../channels/feishu'
 import { loadPersistedSessions, scheduleSaveSessions, sessionsFilePath } from './session-store'
@@ -63,24 +64,27 @@ let memoryStore: MemoryStore | null = null
 let mcpManager: McpManager | null = null
 
 function setupAgent(): void {
-  const kimiConfig = loadKimiConfig(app.getAppPath())
+  const openAIConfig = loadOpenAIConfig(app.getAppPath())
+  const openAIProvider = new OpenAIProvider(openAIConfig)
   const skills = loadAllSkills()
   ensureUserSkillsDir()
   memoryStore = new MemoryStore(memoriesFilePath())
   mcpManager = new McpManager(new McpServerStore(mcpServersFilePath()), commandWorkspaceDir())
   agentService = new ChuangdexAgentService(
-    new KimiProvider(kimiConfig),
+    openAIProvider,
     skills,
     userSkillsDir(),
     memoryStore,
     new CommandRunner(commandWorkspaceDir()),
-    mcpManager
+    mcpManager,
+    // Skill 名称安装需要联网搜索：复用同一 OpenAI 配置的 Responses API web_search
+    new SkillDiscoveryService(openAIProvider)
   )
 
-  if (kimiConfig) {
-    console.log(`[chuangdex] Kimi 配置已加载：${kimiConfig.baseUrl} · ${kimiConfig.model}`)
+  if (openAIConfig) {
+    console.log(`[chuangdex] OpenAI 配置已加载：${openAIConfig.baseUrl} · ${openAIConfig.model}`)
   } else {
-    console.warn(`[chuangdex] 未找到 Kimi 配置，请创建 ${modelsConfigPath(app.getAppPath())}`)
+    console.warn(`[chuangdex] 未找到 OpenAI 配置，请创建 ${modelsConfigPath(app.getAppPath())}`)
   }
   console.log(
     skills.length > 0
@@ -145,8 +149,8 @@ function registerAgentIpc(): void {
       }
     }
 
-    // “确认执行/确认调用”是已有工具的确定性控制消息，不能先交给定时意图模型。
-    if (!/^(?:确认执行|取消执行|确认调用|取消调用)$/i.test(payload.text.trim())) {
+    // “确认执行/确认调用/确认安装”是已有工具的确定性控制消息，不能先交给定时意图模型。
+    if (!/^(?:确认执行|取消执行|确认调用|取消调用|确认安装|取消安装)$/i.test(payload.text.trim())) {
       const schedule = await tryCreateScheduledTask(
         agentService,
         currentDesktopTaskScheduler(),
@@ -244,6 +248,8 @@ function toTaskInfo(task: ScheduledTask, channel: TaskChannel): TaskInfo {
     text: task.text,
     repeat: task.repeat,
     time: task.time,
+    cron: task.cron,
+    timezone: task.timezone,
     nextRunAt: formatTime(task.nextRunAt),
     chatId: task.chatId,
     channel
@@ -316,7 +322,7 @@ function setupDesktopTaskScheduler(): void {
     },
     (line) => console.log(`[desktop-scheduler] ${line}`)
   )
-  desktopTaskScheduler.start()
+  void desktopTaskScheduler.start()
 }
 
 function currentMcpManager(): McpManager {
@@ -481,6 +487,12 @@ if (!hasSingleInstanceLock) {
     setupFeishu()
     setupDesktopTaskScheduler()
     createWindow()
+
+    // 系统睡眠恢复后，两个调度器都重新核对到期任务。
+    powerMonitor.on('resume', () => {
+      desktopTaskScheduler?.reconcile()
+      feishuTaskScheduler?.reconcile()
+    })
 
     app.on('activate', () => {
       // macOS: re-create window when the dock icon is clicked.

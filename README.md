@@ -26,7 +26,7 @@ cp config/models.example.json config/models.local.json
 npm run dev
 ```
 
-启动前编辑 `config/models.local.json`，填入你的 API Key、Endpoint 和模型名。当前 Provider 使用 OpenAI-compatible `/chat/completions` 协议；如果需要 Skills 安装、命令或 MCP 等工具能力，模型还需支持 `tool_calls`。
+启动前编辑 `config/models.local.json`，在 `providers.openai` 中填入你的 OpenAI API Key、Endpoint 和模型名。当前 Provider 使用 `/chat/completions` 协议；如果需要 Skills 安装、命令或 MCP 等工具能力，模型还需支持 `tool_calls`。
 
 `config/models.local.json` 已被 Git 忽略，不会提交到仓库。未配置模型时，应用仍可启动和查看本地数据，发送消息时会给出配置提示。
 

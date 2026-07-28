@@ -65,7 +65,7 @@ export function startFeishuBot(
     loggerLevel: Lark.LoggerLevel.info
   })
 
-  scheduler.start()
+  void scheduler.start()
   wsClient.start({ eventDispatcher: dispatcher })
   return scheduler
 }

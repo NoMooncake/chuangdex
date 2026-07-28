@@ -99,6 +99,8 @@ export interface TaskInfo {
   text: string
   repeat: TaskRepeatMode
   time: string
+  cron?: string
+  timezone?: string
   nextRunAt: string
   chatId: string
   channel: TaskChannel
@@ -111,6 +113,8 @@ export interface TaskCreateInput {
   text: string
   time: string
   repeat: TaskRepeatMode
+  cron?: string
+  timezone?: string
 }
 
 /** 桌面端可编辑的任务字段；投递会话保持不变。 */
@@ -120,6 +124,8 @@ export interface TaskUpdateInput {
   text: string
   time: string
   repeat: TaskRepeatMode
+  cron?: string
+  timezone?: string
 }
 
 export interface TaskRemoveInput {
@@ -141,6 +147,8 @@ export const TASK_CHANNELS = {
 /** 会话持久化载荷：主进程把 sessions 当作不透明 JSON 存取，不解析内容 */
 export interface SessionsSavePayload {
   activeId: string
+  /** 工作台中当前打开的会话标签，顺序即界面顺序；旧存档可以没有此字段。 */
+  openSessionIds?: string[]
   sessions: unknown[]
 }
 

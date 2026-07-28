@@ -12,6 +12,7 @@
     "test:mcp": "esbuild scripts/mcp-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/mcp-smoke.mjs && node .tmp/mcp-smoke.mjs",
     "test:review": "esbuild scripts/review-regressions.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/review-regressions.mjs && node .tmp/review-regressions.mjs",
     "test:schedule": "esbuild scripts/schedule-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/schedule-smoke.mjs && node .tmp/schedule-smoke.mjs",
+    "test:skills": "esbuild scripts/skills-smoke.ts --bundle --packages=external --platform=node --format=esm --outfile=.tmp/skills-smoke.mjs && node .tmp/skills-smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json"
   },
   "devDependencies": {
@@ -27,6 +28,8 @@
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "croner": "^10.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^8.0.7",

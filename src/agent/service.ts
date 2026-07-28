@@ -29,6 +29,13 @@ import {
   parseGitHubRepo
 } from './skills/installer'
 import {
+  PendingSkillInstallManager,
+  SkillDiscoveryService,
+  classifySkillInstallInput,
+  type PendingSkillInstall,
+  type SkillDiscoveryOutcome
+} from './skills/discovery'
+import {
   MemoryManager,
   type MemoryOperationResult,
   type MemoryTurnResult
@@ -244,7 +251,9 @@ export class ChuangdexAgentService {
     private readonly userSkillsDir: string = '',
     memoryStore?: MemoryStore,
     private readonly commandRunner: CommandRunner | null = null,
-    private readonly mcpManager: McpManager | null = null
+    private readonly mcpManager: McpManager | null = null,
+    /** Skill 安装来源发现（联网搜索 + GitHub 验证）；未注入时只能安装用户提供的 URL */
+    private readonly skillDiscovery: SkillDiscoveryService | null = null
   ) {
     this.skillSelector = new SkillSelector(model)
     this.memoryManager = memoryStore ? new MemoryManager(model, memoryStore) : null
@@ -256,6 +265,8 @@ export class ChuangdexAgentService {
   private readonly shortTermMemoryManager: ShortTermMemoryManager
   private readonly pendingCommands = new Map<string, PendingCommand>()
   private readonly pendingMcpCalls = new Map<string, PendingMcpCall>()
+  /** 待确认的 Skill 安装提案（搜索发现的候选必须经用户明确确认） */
+  readonly pendingSkillInstalls = new PendingSkillInstallManager()
 
   /**
    * 处理一条用户消息。
@@ -286,6 +297,13 @@ export class ChuangdexAgentService {
     if (request.source === 'desktop' && !scheduled && this.mcpManager) {
       const mcpReply = await this.handleMcpControlMessage(sessionId, text, emit)
       if (mcpReply !== null) return { sessionId, content: mcpReply }
+    }
+
+    // Skill 安装的确认/取消与安装来源路由都是确定性控制消息，
+    // 必须在进入普通模型对话前处理，不能交给模型二次解释。
+    if (!scheduled) {
+      const installReply = await this.handleSkillInstallMessage(sessionId, text, emit)
+      if (installReply !== null) return { sessionId, content: installReply }
     }
 
     // 2. 读取会话历史：桌面端用滚动摘要 + 最近完整轮次；其他渠道保持最近 12 条。
@@ -776,6 +794,216 @@ export class ChuangdexAgentService {
     }
   }
 
+  // ── Skill 安装：确定性路由、发现与确认 ─────────────────────
+
+  /**
+   * 在进入普通模型对话前处理 Skill 安装相关消息：
+   * · “确认安装 / 取消安装”：确定性解析待确认提案，不经过模型。
+   * · 用户提供 GitHub URL 或 owner/repo 且明确要求安装：直接进入现有安全安装流程。
+   * · 只提供 Skill 名称：联网搜索 → GitHub 验证 → 生成待确认提案。
+   * 返回 null 表示不是安装请求，继续走普通对话流程。
+   */
+  private async handleSkillInstallMessage(
+    sessionId: string,
+    text: string,
+    emit: RunEventSink
+  ): Promise<string | null> {
+    const trimmed = text.trim()
+    if (/^确认安装$/i.test(trimmed)) return this.confirmPendingSkillInstall(sessionId, emit)
+    if (/^取消安装$/i.test(trimmed)) return this.cancelPendingSkillInstall(sessionId, emit)
+
+    const input = classifySkillInstallInput(trimmed)
+    // unsupported（如“安装一下”“怎么安装依赖”）交给普通对话/模型工具处理。
+    if (!input || input.kind === 'unsupported') return null
+
+    emit(
+      this.makeRun(
+        sessionId,
+        '正在识别 Skill 安装来源',
+        input.kind === 'github_url'
+          ? '用户提供了 GitHub 链接，无需联网搜索'
+          : input.kind === 'github_repo'
+            ? `识别为 GitHub 仓库 ${input.repo.owner}/${input.repo.repo}`
+            : `只提供了名称「${input.skillName}」，将联网搜索安装来源`,
+        'success'
+      )
+    )
+
+    if (input.kind === 'github_url' || input.kind === 'github_repo') {
+      const result = await this.executeInstallSkillTool(sessionId, input.url, input.repo, emit)
+      return result.ok
+        ? `已安装 Skill：**${result.name}**\n来源：${result.source}\n${result.message}`
+        : `未能安装 Skill：${result.message}`
+    }
+
+    return this.runSkillDiscovery(sessionId, input.skillName, emit)
+  }
+
+  /** 纯名称安装：搜索 → 验证 → 提案。任何不确定的情况都不会自行安装。 */
+  private async runSkillDiscovery(
+    sessionId: string,
+    skillName: string,
+    emit: RunEventSink
+  ): Promise<string> {
+    if (!this.skillDiscovery || !this.skillDiscovery.isSearchAvailable()) {
+      emit(this.makeRun(sessionId, '联网搜索不可用', '未配置可用的搜索模型', 'failed'))
+      return (
+        `想安装「${skillName}」，但当前无法联网搜索安装来源。\n` +
+        '请直接提供 GitHub 链接（https://github.com/owner/repo）或 owner/repo 仓库名。'
+      )
+    }
+
+    let outcome: SkillDiscoveryOutcome
+    try {
+      outcome = await this.skillDiscovery.discover(skillName, (title, detail, status) =>
+        emit(this.makeRun(sessionId, title, detail, status))
+      )
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      emit(this.makeRun(sessionId, 'Skill 来源发现失败', reason, 'failed'))
+      return `查找「${skillName}」的安装来源时出错：${reason}\n可以直接提供 GitHub 链接或 owner/repo 重试。`
+    }
+
+    switch (outcome.kind) {
+      case 'proposal': {
+        const candidate = outcome.candidate
+        const pending = this.pendingSkillInstalls.create({
+          sessionId,
+          requestedName: skillName,
+          skillName: candidate.skill.name,
+          skillDescription: candidate.skill.description,
+          url: candidate.url,
+          repo: candidate.repo,
+          canonicalKey: candidate.canonicalKey,
+          ...(candidate.repo.ref ? { ref: candidate.repo.ref } : {}),
+          ...(candidate.repo.path ? { path: candidate.repo.path } : {}),
+          ...(candidate.sourceUrl ? { sourceUrl: candidate.sourceUrl } : {}),
+          evidence: candidate.evidence
+        })
+        const ttlMinutes = Math.round(this.pendingSkillInstalls.ttlMs / 60_000)
+        emit(
+          this.makeRun(
+            sessionId,
+            '等待安装确认',
+            `${pending.skillName} · 候选 ${ttlMinutes} 分钟内有效 · 未写入任何文件`,
+            'running'
+          )
+        )
+        return formatSkillInstallProposal(pending, candidate.why, ttlMinutes)
+      }
+      case 'multiple': {
+        emit(
+          this.makeRun(
+            sessionId,
+            '找到多个候选',
+            `${outcome.candidates.length} 个候选均通过验证，需要用户选择`,
+            'success'
+          )
+        )
+        const lines = outcome.candidates.map(
+          (candidate, index) =>
+            `${index + 1}. **${candidate.skill.name}** — ${candidate.skill.description}\n` +
+            `   ${candidate.url}` +
+            (candidate.sourceUrl ? `（来源：${candidate.sourceUrl}）` : '')
+        )
+        return (
+          `找到 ${outcome.candidates.length} 个可能匹配「${skillName}」的候选，差异如下，不会自动安装：\n\n` +
+          lines.join('\n') +
+          '\n\n请回复具体的 GitHub 链接（可以是 tree 目录链接）重新发起安装。'
+        )
+      }
+      case 'ambiguous': {
+        emit(
+          this.makeRun(
+            sessionId,
+            '找到多个候选',
+            `${outcome.repo.owner}/${outcome.repo.repo} 包含 ${outcome.dirs.length} 个 Skill 目录`,
+            'success'
+          )
+        )
+        const ref = outcome.repo.ref ?? 'HEAD'
+        const example = `https://github.com/${outcome.repo.owner}/${outcome.repo.repo}/tree/${ref}/${outcome.dirs[0]}`
+        return (
+          `仓库 ${outcome.repo.owner}/${outcome.repo.repo} 包含多个 Skill，无法确定要安装哪一个：\n` +
+          outcome.dirs.slice(0, 10).map((dir) => `- ${dir || '（根目录）'}`).join('\n') +
+          `\n\n请使用指向具体目录的链接重新安装，例如：\n${example}`
+        )
+      }
+      case 'marketplace_instructions': {
+        emit(
+          this.makeRun(
+            sessionId,
+            '只找到安装说明',
+            '市场页面未提供可直接安装的 GitHub 来源，不会执行其中任何命令',
+            'success'
+          )
+        )
+        return (
+          `找到了「${skillName}」相关的安装说明页面（不是可直接安装的 GitHub 来源）：\n` +
+          `${outcome.url}\n\n页面提供的安装方式：${outcome.note}\n\n` +
+          'ChuangDex 不会自动执行其中的任何命令。如果你希望在本机执行，' +
+          '请把完整命令发给我，我会先展示完整命令并等你确认后再运行。'
+        )
+      }
+      case 'none': {
+        emit(
+          this.makeRun(
+            sessionId,
+            '未找到可靠安装来源',
+            `已搜索 ${outcome.searched.length} 个方向 · ${outcome.rejected.length} 个候选未通过验证`,
+            'failed'
+          )
+        )
+        const rejectedLines = outcome.rejected
+          .slice(0, 5)
+          .map((item) => `- ${item.url}：${item.reason}`)
+        return (
+          `没有找到「${skillName}」可靠的公开安装来源。\n\n` +
+          `已搜索方向：${outcome.searched.join('；')}` +
+          (rejectedLines.length > 0 ? `\n\n以下内容未通过验证：\n${rejectedLines.join('\n')}` : '') +
+          '\n\n请提供更准确的 GitHub 链接、owner/repo 仓库名或具体 Skill 目录。'
+        )
+      }
+      case 'error': {
+        return (
+          `联网搜索失败：${outcome.reason}\n` +
+          '可以改为直接提供 GitHub 链接或 owner/repo 仓库名安装。'
+        )
+      }
+    }
+  }
+
+  /** “确认安装”：确定性地执行待确认候选；过期或不存在时拒绝。 */
+  private async confirmPendingSkillInstall(
+    sessionId: string,
+    emit: RunEventSink
+  ): Promise<string> {
+    const pending = this.pendingSkillInstalls.take(sessionId)
+    if (!pending) {
+      emit(
+        this.makeRun(sessionId, '安装确认无效', '当前会话没有待确认的 Skill 安装，或候选已过期', 'failed')
+      )
+      return '当前没有待确认的 Skill 安装，或候选已过期。请重新发起安装请求。'
+    }
+    emit(this.makeRun(sessionId, '已确认安装', `${pending.skillName} · 来源 ${pending.url}`, 'success'))
+    const result = await this.executeInstallSkillTool(sessionId, pending.url, pending.repo, emit)
+    return result.ok
+      ? `已安装 Skill：**${result.name}**\n来源：${result.source}\n${result.message}`
+      : `未能安装 Skill：${result.message}`
+  }
+
+  private async cancelPendingSkillInstall(
+    sessionId: string,
+    emit: RunEventSink
+  ): Promise<string> {
+    if (this.pendingSkillInstalls.cancel(sessionId)) {
+      emit(this.makeRun(sessionId, '已取消安装', '候选已丢弃，未写入任何文件', 'success'))
+      return '已取消安装。'
+    }
+    emit(this.makeRun(sessionId, '取消安装无效', '当前会话没有待确认的 Skill 安装', 'failed'))
+    return '当前没有待确认的 Skill 安装。'
+  }
+
   private createCommandApproval(
     sessionId: string,
     command: string,
@@ -1194,6 +1422,27 @@ export class ChuangdexAgentService {
       ts: Date.now()
     }
   }
+}
+
+function formatSkillInstallProposal(
+  pending: PendingSkillInstall,
+  why: string,
+  ttlMinutes: number
+): string {
+  return [
+    '找到 1 个可信的 Skill 候选，确认后才会安装：',
+    '',
+    `**${pending.skillName}** — ${pending.skillDescription}`,
+    `- 仓库：https://github.com/${pending.repo.owner}/${pending.repo.repo}`,
+    `- Skill 目录：${pending.path ?? '根目录'}`,
+    `- 匹配理由：${why}（来自联网搜索，仅供参考）`,
+    pending.sourceUrl ? `- 来源页面：${pending.sourceUrl}` : null,
+    `- 验证情况：${pending.evidence.join('；')}`,
+    '',
+    `回复“确认安装”开始安装，回复“取消安装”放弃。候选 ${ttlMinutes} 分钟内有效。`
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n')
 }
 
 function formatCommandApproval(approval: CommandApprovalToolResult): string {

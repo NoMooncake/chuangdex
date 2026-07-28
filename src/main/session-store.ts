@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'path'
 import type { SessionsLoadResult, SessionsSavePayload } from '../shared/agent'
 
-const FILE_VERSION = 1
+const FILE_VERSION = 2
 const SAVE_DEBOUNCE_MS = 150
 
 export function sessionsFilePath(): string {
@@ -27,12 +27,20 @@ export function loadPersistedSessions(): SessionsLoadResult {
 
     const raw = JSON.parse(readFileSync(file, 'utf-8')) as {
       activeId?: unknown
+      openSessionIds?: unknown
       sessions?: unknown
     }
     if (!raw || typeof raw.activeId !== 'string' || !Array.isArray(raw.sessions)) {
       return null
     }
-    return { activeId: raw.activeId, sessions: raw.sessions }
+    const openSessionIds = Array.isArray(raw.openSessionIds)
+      ? raw.openSessionIds.filter((id): id is string => typeof id === 'string')
+      : undefined
+    return {
+      activeId: raw.activeId,
+      ...(openSessionIds ? { openSessionIds } : {}),
+      sessions: raw.sessions
+    }
   } catch (err) {
     // JSON 损坏等情况：不崩溃，安全回退
     console.warn('[chuangdex] sessions.json 读取失败，已回退到初始会话：', err)

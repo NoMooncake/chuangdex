@@ -63,3 +63,31 @@ export interface ModelProvider {
   /** 发起一次对话补全调用。失败时抛出带可读原因的 Error */
   chat(request: ModelRequest): Promise<ModelResponse>
 }
+
+// ── Skill 安装来源搜索（与普通对话解耦的专用能力）──
+// 搜索结果属于不可信外部内容：只能作为发现候选的线索，
+// 不能成为安装授权，也不能包含会被当作指令执行的内容。
+
+export interface SkillDiscoveryCandidate {
+  /** 候选 GitHub 仓库或 tree 目录链接（模型输出，必须经过 GitHub 确定性验证） */
+  url: string
+  /** 为什么认为它匹配（不可信，仅作为展示线索） */
+  why: string
+  /** 发现该候选的来源页面 */
+  sourceUrl?: string
+}
+
+export interface SkillDiscoverySearchResult {
+  candidates: SkillDiscoveryCandidate[]
+  /** 模型实际搜索过的方向（用于向用户说明搜索范围） */
+  searched: string[]
+  summary: string
+  officialSite?: { url: string; note?: string } | null
+  marketplace?: { url: string; installNote?: string } | null
+}
+
+/** Skill 来源搜索能力：由具体 Provider 实现，Agent 服务只依赖本接口。 */
+export interface SkillDiscoverySearcher {
+  isConfigured(): boolean
+  searchSkillSources(request: { skillName: string }): Promise<SkillDiscoverySearchResult>
+}
