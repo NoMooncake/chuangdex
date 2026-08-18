@@ -39,6 +39,7 @@ export interface MemoryTurnResult {
   results: MemoryOperationResult[]
 }
 
+/** 记忆管理器，负责管理记忆的添加、修改、删除和查询 */
 export class MemoryManager {
   constructor(
     private readonly model: ModelProvider,
@@ -49,6 +50,7 @@ export class MemoryManager {
     return this.store.load()
   }
 
+  /** 决定是否需要操作记忆，如果需要，返回记忆操作决策 */
   async decide(
     userText: string,
     history: HistoryMessage[] = [],
@@ -79,6 +81,7 @@ export class MemoryManager {
     }
   }
 
+  /** 应用记忆操作，如果操作失败，返回失败结果 */
   private applyAction(action: MemoryAction): MemoryOperationResult {
     if (action.action === 'add') {
       if (!action.content) {
@@ -214,6 +217,7 @@ function buildMemoryPrompt(memories: MemoryItem[], shortTermSummary: string): st
   ].join('\n')
 }
 
+/** 解析模型返回的记忆决策，如果解析失败，返回空决策 */
 function parseMemoryDecision(raw: string): MemoryDecision {
   const parsed = parseJsonObject(raw)
   if (!parsed) return emptyDecision()

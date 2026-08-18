@@ -22,6 +22,7 @@ import {
   APP_SET_THEME,
   AppTheme,
   MEMORY_CHANNELS,
+  MemoryUpdateInput,
   MCP_CHANNELS,
   McpServerInput,
   McpServerUpdateInput,
@@ -345,7 +346,7 @@ function setupDataBridge(): void {
     }
   })
 
-  // 长期记忆：只读和删除；新增/修改由 Agent 服务在对话中自主处理
+  // 长期记忆：界面可读取、编辑和删除；新增由 Agent 服务在对话中自主处理
   ipcMain.handle(MEMORY_CHANNELS.load, () => {
     try {
       return memoryStore?.load() ?? []
@@ -353,6 +354,13 @@ function setupDataBridge(): void {
       console.warn('[chuangdex] 加载记忆失败：', err)
       return []
     }
+  })
+
+  ipcMain.handle(MEMORY_CHANNELS.update, (_event, input: MemoryUpdateInput) => {
+    if (!memoryStore) throw new Error('记忆存储尚未启动')
+    const result = memoryStore.update(input.id, input.content)
+    if (!result.ok) throw new Error(memoryUpdateFailureMessage(result.reason))
+    return result.item
   })
 
   ipcMain.handle(MEMORY_CHANNELS.remove, (_event, id: string) => {
@@ -417,6 +425,18 @@ function setupDataBridge(): void {
   ipcMain.handle(TASK_CHANNELS.remove, (_event, input: TaskRemoveInput) => {
     schedulerForChannel(input.channel).removeTask(input.id)
   })
+}
+
+function memoryUpdateFailureMessage(reason: import('../agent/memory/store').MemoryStoreFailureReason): string {
+  const messages: Record<import('../agent/memory/store').MemoryStoreFailureReason, string> = {
+    empty: '记忆内容不能为空',
+    too_long: '单条记忆不能超过 500 个字符',
+    capacity: '记忆已达容量上限',
+    duplicate: '相同记忆已经存在',
+    sensitive: '记忆包含敏感信息，已拒绝保存',
+    not_found: '这条记忆已不存在'
+  }
+  return messages[reason]
 }
 
 // 飞书机器人渠道：配置存在才启动；任何失败只记日志，不影响桌面端

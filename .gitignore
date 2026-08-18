@@ -4,6 +4,13 @@ dist/
 .tmp/
 *.log
 .DS_Store
+._*
+
+# 本地设计过程与 QA 对比材料；公开仓库只保留最终品牌资源和产品截图
+design-qa.md
+qa/
+assets/brand-concepts/
+assets/brand/source/
 
 # 真实的本机模型配置（含 API Key），绝不提交
 config/models.local.json

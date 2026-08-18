@@ -1,5 +1,9 @@
 # ChuangDex
 
+<p align="center">
+  <img src="assets/brand/chuangdex-icon-final.png" width="112" alt="ChuangDex 图标" />
+</p>
+
 ChuangDex 是一个本地优先、可观察、可扩展的 Agent 桌面客户端，同时可作为飞书机器人运行。它把对话、Skills、长期记忆、受控命令执行、MCP 工具和定时任务整合在同一个 Electron 应用中，并把 Agent 每一步的执行过程实时展示出来。
 
 ## 核心能力
@@ -8,11 +12,15 @@ ChuangDex 是一个本地优先、可观察、可扩展的 Agent 桌面客户端
 - **可观察执行**：对话中的每轮任务都有执行摘要和可折叠记录，右侧栏实时展示步骤、状态和耗时。
 - **自定义模型**：通过 API Key、Endpoint 和模型名接入你自己的 OpenAI-compatible 模型服务，Agent 内核与具体厂商接口解耦。
 - **Skills**：自动发现内置与用户 Skill，由 Agent 根据当前请求选择是否使用；也可从用户明确提供的公开 GitHub 链接安装完整 Skill 目录。
-- **长期记忆**：Agent 可在桌面会话中新增、修改、回忆或删除原子记忆，并提供独立的记忆管理页。
+- **长期记忆**：Agent 可在桌面会话中新增、修改、回忆或删除原子记忆；用户也可在独立的记忆管理页直接编辑和校正记忆。
 - **受控命令执行**：Agent 可提议在独立工作目录执行非交互式命令，但必须先展示完整命令并等待用户确认。
 - **MCP**：在桌面端管理本地 stdio MCP Server，查看连接状态和工具列表；每次工具调用均需用户确认。
 - **定时任务**：可从桌面聊天框或飞书会话用自然语言创建周期任务，到点后自动唤醒 Agent 并回复到创建任务的会话。
 - **飞书渠道**：可选的私聊/群聊机器人，复用与桌面端相同的定时任务解析和调度逻辑。
+
+## 产品界面
+
+![ChuangDex 记忆管理界面](docs/screenshots/memory-management.png)
 
 ## 快速开始
 
@@ -49,7 +57,9 @@ Agent 会结合用户请求和当前会话判断是否选用 Skill，未匹配�
 
 ### 长期记忆
 
-长期记忆只在桌面会话中使用，不会注入飞书对话或定时任务。Agent 根据对话判断是否需要保存或更新记忆，用户也可在「记忆」页查看和删除。记忆最多保留 50 条，单条最多 500 个字符。
+长期记忆只在桌面会话中使用，不会注入飞书对话或定时任务。Agent 根据对话判断是否需要新增、更新或删除记忆；用户也可在「记忆」页直接编辑和删除。编辑后的内容会持久化到本地，并从下一轮桌面对话开始进入 Agent 上下文。
+
+记忆最多保留 50 条，单条最多 500 个字符。界面和存储层会共同拦截空内容、重复内容、超长内容与敏感信息；编辑过程支持取消、保存中状态、错误反馈以及 `Command/Ctrl + Enter` 快速保存。
 
 ### 命令执行
 
@@ -130,9 +140,12 @@ npm run test:memory  # 桌面滚动摘要与飞书固定窗口回归测试
 npm run test:mcp     # MCP 连接与 Agent 调用 smoke test
 npm run test:review  # MCP 生命周期与记忆边界回归测试
 npm run test:schedule # 桌面/飞书共用创建与定时执行语境回归测试
+npm run test:skills  # Skill 发现、搜索、安装与安全边界回归测试
 npm run build        # 生成生产构建到 out/
 npm start            # 预览已生成的构建
 ```
+
+当前版本已通过 TypeScript 类型检查，以及 Memory、MCP、Review、Schedule、Skills 五组 smoke / regression 测试。长期记忆测试还会验证：用户手动编辑记忆后，下一轮桌面对话只会读取更新后的内容。
 
 ## 目录结构
 
@@ -158,6 +171,8 @@ src/
   renderer/                 # React 界面
   shared/agent.ts           # 共享类型与 IPC 通道
 scripts/                    # smoke test 与回归测试
+assets/brand/               # ChuangDex 最终品牌图标
+docs/screenshots/           # README 使用的产品截图
 ```
 
 ## 技术栈

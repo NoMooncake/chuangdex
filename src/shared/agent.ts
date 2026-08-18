@@ -168,8 +168,14 @@ export interface MemoryItem {
   updatedAt: number
 }
 
+export interface MemoryUpdateInput {
+  id: string
+  content: string
+}
+
 export const MEMORY_CHANNELS = {
   load: 'memories:load',
+  update: 'memories:update',
   remove: 'memories:remove'
 } as const
 
