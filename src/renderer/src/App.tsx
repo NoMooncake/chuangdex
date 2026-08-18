@@ -7,6 +7,7 @@ import type {
   McpServerInput,
   McpServerUpdateInput,
   MemoryItem,
+  MemoryUpdateInput,
   SkillInfo,
   TaskChannel,
   TaskCreateInput,
@@ -1125,9 +1126,60 @@ function McpView(props: {
 
 function MemoryView(props: {
   memories: MemoryItem[]
+  onUpdate: (input: MemoryUpdateInput) => Promise<void>
   onRemove: (id: string) => Promise<void>
 }): JSX.Element {
   const [removing, setRemoving] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const beginEditing = (memory: MemoryItem): void => {
+    setEditing(memory.id)
+    setDraft(memory.content)
+    setError('')
+  }
+
+  const cancelEditing = (): void => {
+    if (saving) return
+    setEditing(null)
+    setDraft('')
+    setError('')
+  }
+
+  const handleUpdate = async (memory: MemoryItem): Promise<void> => {
+    const content = draft.trim()
+    if (!content) {
+      setError('记忆内容不能为空')
+      return
+    }
+    if (content === memory.content) {
+      cancelEditing()
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    try {
+      await props.onUpdate({ id: memory.id, content })
+      setEditing(null)
+      setDraft('')
+    } catch (updateError) {
+      const message = updateError instanceof Error ? updateError.message : String(updateError)
+      const knownMessage = [
+        '记忆内容不能为空',
+        '单条记忆不能超过 500 个字符',
+        '记忆已达容量上限',
+        '相同记忆已经存在',
+        '记忆包含敏感信息，已拒绝保存',
+        '这条记忆已不存在'
+      ].find((candidate) => message.includes(candidate))
+      setError(knownMessage ?? '保存失败，请稍后重试')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const handleRemove = async (id: string): Promise<void> => {
     setRemoving(id)
@@ -1149,23 +1201,73 @@ function MemoryView(props: {
         ) : (
           props.memories.map((memory) => (
             <div key={memory.id} className="data-item memory-item">
-              <div className="data-item-head">
-                <div>
-                  <div className="data-title">{memory.content}</div>
-                  <div className="data-meta">
-                    创建于 {new Date(memory.createdAt).toLocaleString('zh-CN')}
+              {editing === memory.id ? (
+                <div className="memory-editor">
+                  <label className="memory-editor-label" htmlFor={`memory-${memory.id}`}>
+                    编辑记忆
+                  </label>
+                  <textarea
+                    id={`memory-${memory.id}`}
+                    autoFocus
+                    maxLength={500}
+                    value={draft}
+                    disabled={saving}
+                    onChange={(event) => {
+                      setDraft(event.target.value)
+                      if (error) setError('')
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') cancelEditing()
+                      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleUpdate(memory)
+                      }
+                    }}
+                  />
+                  <div className="memory-editor-footer">
+                    <span className="memory-character-count">{Array.from(draft).length}/500</span>
+                    <div className="data-actions">
+                      <button className="data-action" disabled={saving} onClick={cancelEditing}>取消</button>
+                      <button
+                        className="data-action primary"
+                        disabled={saving || !draft.trim() || draft.trim() === memory.content}
+                        onClick={() => void handleUpdate(memory)}
+                      >
+                        {saving ? '保存中…' : '保存'}
+                      </button>
+                    </div>
+                  </div>
+                  {error && <div className="task-form-error" role="alert">{error}</div>}
+                </div>
+              ) : (
+                <div className="data-item-head">
+                  <div>
+                    <div className="data-title">{memory.content}</div>
+                    <div className="data-meta">
+                      创建于 {new Date(memory.createdAt).toLocaleString('zh-CN')}
+                      {memory.updatedAt > memory.createdAt && (
+                        <> · 更新于 {new Date(memory.updatedAt).toLocaleString('zh-CN')}</>
+                      )}
+                    </div>
+                  </div>
+                  <div className="data-actions">
+                    <button
+                      className="data-action"
+                      disabled={removing === memory.id}
+                      onClick={() => beginEditing(memory)}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      className="data-action danger"
+                      disabled={removing === memory.id}
+                      onClick={() => void handleRemove(memory.id)}
+                    >
+                      {removing === memory.id ? '删除中…' : '删除'}
+                    </button>
                   </div>
                 </div>
-                <div className="data-actions">
-                  <button
-                    className="data-action danger"
-                    disabled={removing === memory.id}
-                    onClick={() => void handleRemove(memory.id)}
-                  >
-                    {removing === memory.id ? '删除中…' : '删除'}
-                  </button>
-                </div>
-              </div>
+              )}
             </div>
           ))
         )}
@@ -1635,6 +1737,11 @@ export default function App(): JSX.Element {
     await refreshMemories()
   }
 
+  const handleUpdateMemory = async (input: MemoryUpdateInput): Promise<void> => {
+    await window.chuangdex.memories.update(input)
+    await refreshMemories()
+  }
+
   const handleCreateTask = async (input: TaskCreateInput): Promise<void> => {
     await window.chuangdex.tasks.create(input)
     await refreshTasks()
@@ -1903,7 +2010,11 @@ export default function App(): JSX.Element {
 
         {view === 'memories' && (
           <div className="workbench-secondary-view">
-          <MemoryView memories={memories} onRemove={handleRemoveMemory} />
+          <MemoryView
+            memories={memories}
+            onUpdate={handleUpdateMemory}
+            onRemove={handleRemoveMemory}
+          />
           </div>
         )}
       </section>

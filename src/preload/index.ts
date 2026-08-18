@@ -11,6 +11,7 @@ import {
   AppTheme,
   MEMORY_CHANNELS,
   MemoryItem,
+  MemoryUpdateInput,
   MCP_CHANNELS,
   McpServerInfo,
   McpServerInput,
@@ -94,9 +95,11 @@ const api = {
   /** 外部链接：Markdown 中的链接通过主进程调用系统浏览器打开 */
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke(APP_OPEN_EXTERNAL, url),
 
-  /** 长期记忆：只读和手动删除；新增/修改由 Agent 在对话中自主处理 */
+  /** 长期记忆：界面可读取、编辑和删除；新增仍由 Agent 在对话中自主处理 */
   memories: {
     load: (): Promise<MemoryItem[]> => ipcRenderer.invoke(MEMORY_CHANNELS.load),
+    update: (input: MemoryUpdateInput): Promise<MemoryItem> =>
+      ipcRenderer.invoke(MEMORY_CHANNELS.update, input),
     remove: (id: string): Promise<void> => ipcRenderer.invoke(MEMORY_CHANNELS.remove, id)
   },
 

@@ -25,7 +25,7 @@ import type {
 } from '../src/agent/providers/types'
 
 // ── 内存 GitHub ─────────────────────────────────────────────
-
+/** 内存中的假 GitHub 仓库、目录树、SKILL.md 和压缩包 */
 interface FakeGithub {
   /** `${owner}/${repo}` → tar.gz 内容 */
   archives: Map<string, Buffer>
@@ -129,7 +129,7 @@ async function githubFetch(gh: FakeGithub, url: string): Promise<Response> {
   }
   throw new Error(`测试中出现未 mock 的 GitHub 请求：${url}`)
 }
-
+/** 全局拦截网络请求，出现未 mock 请求就直接报错 */
 const realFetch = globalThis.fetch
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = String(input)
@@ -139,7 +139,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
 }) as typeof fetch
 
 // ── 假模型 / 假搜索器 ───────────────────────────────────────
-
+/** 假模型，用于模拟模型返回的回答 */
 class FakeModel implements ModelProvider {
   readonly name = 'fake-model'
   requests: ModelRequest[] = []
@@ -390,6 +390,7 @@ async function testCancelAndExpiry(): Promise<void> {
   console.log('✓ 8/9. 取消安装与过期提案均不写盘')
 }
 
+/** 测试多个候选时列出差异，不安装 */
 async function testMultipleCandidates(): Promise<void> {
   const gh = emptyGithub()
   currentGithub = gh
@@ -510,6 +511,7 @@ async function testRepoWithMultipleSkills(): Promise<void> {
   console.log('✓ 15. 仓库包含多个 Skill 时要求具体目录')
 }
 
+/** 测试同名 Skill 不覆盖 */
 async function testDuplicateNotOverwritten(): Promise<void> {
   const gh = emptyGithub()
   currentGithub = gh
@@ -570,6 +572,7 @@ async function testPromptInjectionResisted(): Promise<void> {
   console.log('✓ 18. 搜索注入内容不影响安装授权')
 }
 
+/** 测试搜索失败时返回友好错误 */
 async function testSearchErrorMessages(): Promise<void> {
   currentGithub = emptyGithub()
   for (const [reason, keyword] of [
@@ -784,7 +787,7 @@ async function testTruncatedTreeFallsBack(): Promise<void> {
 }
 
 // ── 入口 ────────────────────────────────────────────────────
-
+/** 测试入口覆盖到编号 25，并输出 SKILLS_SMOKE_OK */
 try {
   await testClassification()
   await testInstallFullUrl()

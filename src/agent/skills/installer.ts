@@ -365,6 +365,7 @@ function toRelativeSkillPath(repoPath: string, skillRoot: string): string | null
   return normalizeRepoPath(relative)
 }
 
+/** 规范化仓库路径，如果路径不安全或包含非法字符，返回 null */
 function normalizeRepoPath(input: string): string | null {
   if (!input) return ''
   if (input.includes('\\') || input.includes('\0') || input.startsWith('/')) return null
@@ -374,6 +375,7 @@ function normalizeRepoPath(input: string): string | null {
   return normalized
 }
 
+/** 安全解码 URL 路径段，如果解码失败或包含非法字符，返回 null */
 function safeDecodeSegment(value: string): string | null {
   try {
     const decoded = decodeURIComponent(value)
@@ -503,6 +505,7 @@ function collectSkillFiles(tar: Buffer, skillRoot: string): Promise<SkillPackage
   })
 }
 
+/** 安全移除压缩包根路径，如果路径不安全或包含非法字符，返回空字符串 */
 function stripArchiveRoot(input: string): string {
   if (!input || input.includes('\\') || input.includes('\0') || input.startsWith('/')) {
     throw new SkillInstallError('GitHub 源码包包含不安全路径')

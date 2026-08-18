@@ -116,6 +116,7 @@ function normalize(content: string): string {
   return content.trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
+/** 验证记忆内容是否符合保存条件，如果符合，返回 null；否则返回失败原因 */
 function validateContent(
   content: string,
   memories: MemoryItem[]

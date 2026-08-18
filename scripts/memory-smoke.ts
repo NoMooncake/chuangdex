@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ChuangdexAgentService } from '../src/agent/service'
+import { MemoryStore } from '../src/agent/memory/store'
 import type { AgentRunEvent, HistoryMessage, ShortTermMemoryState } from '../src/shared/agent'
 import type { ModelProvider, ModelRequest, ModelResponse } from '../src/agent/providers/types'
 
@@ -118,6 +122,35 @@ async function testFeishuKeepsTwelveMessageWindow(): Promise<void> {
   )
 }
 
+async function testEditedMemoryReachesNextChat(): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), 'chuangdex-memory-edit-'))
+  try {
+    const store = new MemoryStore(join(directory, 'memories.json'))
+    const added = store.add('用户喜欢被称呼为“创”')
+    assert.equal(added.ok, true)
+    if (!added.ok) return
+
+    const updated = store.update(added.item.id, '用户喜欢被称呼为“大卫”')
+    assert.equal(updated.ok, true)
+    if (!updated.ok) return
+    assert.equal(updated.item.id, added.item.id)
+
+    const model = new MemoryAwareFakeModel()
+    await new ChuangdexAgentService(model, [], '', store).handleMessage(
+      { sessionId: 'edited-memory', source: 'desktop', text: '我叫什么？' },
+      () => undefined
+    )
+
+    const finalRequest = model.requests.at(-1)
+    assert.ok(finalRequest)
+    const systemPrompt = finalRequest.messages[0]?.content ?? ''
+    assert.ok(systemPrompt.includes('用户喜欢被称呼为“大卫”'))
+    assert.equal(systemPrompt.includes('用户喜欢被称呼为“创”'), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 class FakeModel implements ModelProvider {
   readonly name = 'fake'
   readonly requests: ModelRequest[] = []
@@ -139,6 +172,27 @@ class FakeModel implements ModelProvider {
       return { content: GENERATED_SUMMARY, model: 'fake-summary' }
     }
     return { content: '最终回答', model: 'fake-chat' }
+  }
+}
+
+class MemoryAwareFakeModel implements ModelProvider {
+  readonly name = 'memory-aware-fake'
+  readonly requests: ModelRequest[] = []
+
+  isConfigured(): boolean {
+    return true
+  }
+
+  describeTarget(): string {
+    return 'fake endpoint'
+  }
+
+  async chat(request: ModelRequest): Promise<ModelResponse> {
+    this.requests.push(request)
+    if (request.messages[0]?.content?.startsWith('你是 ChuangDex 的长期记忆管理器。')) {
+      return { content: '{"recall":false,"memoryOnly":false,"actions":[]}', model: 'fake-memory' }
+    }
+    return { content: '你喜欢被称呼为大卫。', model: 'fake-chat' }
   }
 }
 
@@ -182,4 +236,5 @@ const firstCompaction = await testDesktopHistoryCompacts()
 await testSuccessiveCompaction(firstCompaction)
 await testCompactionFailureFallsBack()
 await testFeishuKeepsTwelveMessageWindow()
+await testEditedMemoryReachesNextChat()
 console.log('MEMORY_SMOKE_OK')

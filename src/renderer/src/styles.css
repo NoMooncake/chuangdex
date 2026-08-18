@@ -957,6 +957,68 @@ button {
   background: var(--red-dim);
 }
 
+.data-action.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.data-action.primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  filter: brightness(0.92);
+}
+
+.data-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.memory-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-editor-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.memory-editor textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: none;
+  padding: 9px 10px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.memory-editor textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.16);
+}
+
+.memory-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-character-count {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .task-editor {
   display: flex;
   flex-direction: column;
